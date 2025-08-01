@@ -1,0 +1,2 @@
+# jgd
+Jacobi Graph Diffusion
