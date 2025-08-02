@@ -1,2 +1,3 @@
-# jgd
-Jacobi Graph Diffusion
+# Jacobi Graph Diffusion (JGD)
+
+This is a minimal repository to run JGD.

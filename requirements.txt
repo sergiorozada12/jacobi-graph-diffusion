@@ -1,0 +1,8 @@
+matplotlib==3.7.1
+networkx==2.8.7
+numpy==1.23.0
+omegaconf==2.3.0
+pytorch_lightning==2.0.4
+scipy==1.16.1
+torch==2.0.1+cu118
+tqdm==4.65.0
