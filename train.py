@@ -5,7 +5,7 @@ from pytorch_lightning.loggers import WandbLogger
 
 from src.train.trainer import DiffusionGraphModule
 from src.dataset.synth import SynthGraphDatasetModule
-from configs.config_ego import MainConfig
+from configs.config_sbm import MainConfig
 
 
 def main():
@@ -17,7 +17,7 @@ def main():
 
     model = DiffusionGraphModule(cfg)
 
-    logger = WandbLogger(project="jacobi-graph-diffusion", name="ego-test")
+    logger = WandbLogger(project="jacobi-graph-diffusion", name="tree-test")
     trainer = Trainer(
         accelerator=cfg.general.device,
         devices=[1],

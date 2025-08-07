@@ -30,15 +30,16 @@ class DataConfig:
 
 @dataclass
 class ModelConfig:
-    max_feat_num: int = 2
+    max_feat_num: int = 14   # n_features + t_dims + 1
     nhid: int = 32
-    num_layers: int = 7
+    num_layers: int = 5
     num_linears: int = 2
     c_init: int = 2
     c_hid: int = 8
     c_final: int = 4
     adim: int = 32
     num_heads: int = 4
+    t_dim: int = 6
     conv: str = "GCN"
 
 @dataclass
@@ -51,9 +52,9 @@ class TrainConfig:
     num_epochs: int = 5_000
     grad_norm: float = 1.0
     lambda_adj: float = 1.0
-    lambda_x: float = 0.1
-    features: List[str] = field(default_factory=lambda: ["degree"])
-    k_eig: Optional[int] = None
+    lambda_x: float = 0.0
+    features: List[str] = field(default_factory=lambda: ["degree", "cycles3", "cycles4", "eigenvectors"])
+    k_eig: Optional[int] = 4
 
 @dataclass
 class SDEConfig:

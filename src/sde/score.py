@@ -48,6 +48,6 @@ class JacobiScore:
     def compute_score(self, x, adj, flags, t):
         adj_inp = torch.bernoulli(adj)
         x_aug = self.feature_extractor.augment(x, adj_inp)
-        _, adj_0 = self.model(x_aug, adj_inp, flags)
+        _, adj_0 = self.model(x_aug, adj_inp, t, flags)
         score = self.legendre_score(adj_0, adj, t).float()
         return score

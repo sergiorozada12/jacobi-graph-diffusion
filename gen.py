@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 from src.models.marginal_network import MarginalNetwork
 from src.dataset.synth import SynthGraphDatasetModule
 from src.sample.sampler import Sampler
-from configs.config_ego import MainConfig
+from configs.config_tree import MainConfig
 
 
 def main():

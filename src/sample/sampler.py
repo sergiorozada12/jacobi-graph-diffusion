@@ -77,7 +77,7 @@ class Sampler:
         fig.suptitle("Sampled Graphs", fontsize=16)
         plt.tight_layout()
         
-        save_path = f"results_generated/test.png"
+        save_path = f"samples/test.png"
         plt.savefig(save_path, dpi=300)
         plt.close(fig)
 

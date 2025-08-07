@@ -210,3 +210,60 @@ def init_flags(graph_list, config, batch_size=None):
     idx = np.random.randint(0, len(graph_list), batch_size)
     flags = node_flags(graph_tensor[idx])
     return flags
+
+
+class PlaceHolder:
+    def __init__(self, X, E, y):
+        self.X = X
+        self.E = E
+        self.y = y
+
+    def type_as(self, x: torch.Tensor):
+        """Changes the device and dtype of X, E, y."""
+        self.X = self.X.type_as(x)
+        self.E = self.E.type_as(x)
+        self.y = self.y.type_as(x)
+        return self
+
+    def to_device(self, device):
+        """Changes the device and dtype of X, E, y."""
+        self.X = self.X.to(device)
+        self.E = self.E.to(device)
+        self.y = self.y.to(device) if self.y is not None else None
+        return self
+
+    def mask(self, node_mask, collapse=False):
+        x_mask = node_mask.unsqueeze(-1)  # bs, n, 1
+        e_mask1 = x_mask.unsqueeze(2)  # bs, n, 1, 1
+        e_mask2 = x_mask.unsqueeze(1)  # bs, 1, n, 1
+
+        if collapse:
+            self.X = torch.argmax(self.X, dim=-1)
+            self.E = torch.argmax(self.E, dim=-1)
+
+            self.X[node_mask == 0] = -1
+            self.E[(e_mask1 * e_mask2).squeeze(-1) == 0] = -1
+        else:
+            self.X = self.X * x_mask
+            self.E = self.E * e_mask1 * e_mask2
+            assert torch.allclose(self.E, torch.transpose(self.E, 1, 2))
+        return self
+
+    def __repr__(self):
+        return (
+            f"X: {self.X.shape if type(self.X) == torch.Tensor else self.X} -- "
+            + f"E: {self.E.shape if type(self.E) == torch.Tensor else self.E} -- "
+            + f"y: {self.y.shape if type(self.y) == torch.Tensor else self.y}"
+        )
+
+    def split(self, node_mask):
+        """Split a PlaceHolder representing a batch into a list of placeholders representing individual graphs."""
+        graph_list = []
+        batch_size = self.X.shape[0]
+        for i in range(batch_size):
+            n = torch.sum(node_mask[i], dim=0)
+            x = self.X[i, :n]
+            e = self.E[i, :n, :n]
+            y = self.y[i] if self.y is not None else None
+            graph_list.append(PlaceHolder(X=x, E=e, y=y))
+        return graph_list

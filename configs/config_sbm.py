@@ -21,7 +21,7 @@ class SamplerConfig:
 class DataConfig:
     dir: str = "data"
     data: str = "sbm"
-    batch_size: int = 128
+    batch_size: int = 64
     max_node_num: int = 40
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -48,7 +48,7 @@ class TrainConfig:
     eps: float = 1e-5
     lr_schedule: bool = True
     lr_decay: float = 0.999
-    num_epochs: int = 5_000
+    num_epochs: int = 10_000
     grad_norm: float = 1.0
     lambda_adj: float = 1.0
     lambda_x: float = 0.1
