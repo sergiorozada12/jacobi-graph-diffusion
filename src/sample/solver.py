@@ -12,10 +12,10 @@ class EulerMaruyamaPredictor:
         self.rsde = sde.reverse(score_fn)
         self.score_fn = score_fn
 
-    def update(self, x, adj, flags, t):
+    def update(self, adj, flags, t):
         dt = -1.0 / self.rsde.N
         noise = gen_noise(adj, flags)
-        drift, diffusion = self.rsde.sde(x, adj, flags, t, is_adj=True)
+        drift, diffusion = self.rsde.sde(adj, flags, t)
 
         adj_mean = adj + drift * dt
         adj = adj_mean + diffusion * np.sqrt(-dt) * noise
@@ -34,13 +34,13 @@ class LangevinCorrector:
         self.scale_eps = scale_eps
         self.n_steps = n_steps
 
-    def update(self, x, adj, flags, t):
+    def update(self, adj, flags, t):
         n_steps = self.n_steps
         target_snr = self.snr
         seps = self.scale_eps
 
         for _ in range(n_steps):
-            grad = self.score_fn.compute_score(x, adj, flags, t)
+            grad = self.score_fn.compute_score(adj, flags, t)
             noise = gen_noise(adj, flags)
             grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
             noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
@@ -57,11 +57,11 @@ class PCSolver:
     def __init__(
             self,
             sde,
-            shape_x,
             shape_adj,
             model,
             node_features,
-            k_eig,
+            rrwp_steps,
+            max_n_nodes,
             snr=0.1,
             scale_eps=1.0,
             n_steps=1,
@@ -70,9 +70,7 @@ class PCSolver:
             device="cuda",
             order=10,
         ):
-
         self.sde = sde
-        self.shape_x = shape_x
         self.shape_adj = shape_adj
         self.denoise = denoise
         self.eps = eps
@@ -81,8 +79,9 @@ class PCSolver:
         
         jacobi_score = JacobiScore(
             model=model,
-            node_features=node_features,
-            k_eig=k_eig,
+            extra_features=node_features,
+            rrwp_steps=rrwp_steps,
+            max_n_nodes=max_n_nodes,
             order=order
         )
 
@@ -91,19 +90,15 @@ class PCSolver:
 
     def solve(self, flags):
         with torch.no_grad():
-            x = torch.ones(self.shape_x, device=self.device)
             adj = self.sde.prior_sampling(self.shape_adj).to(self.device)
-
-            x = mask_x(x, flags)
             adj = mask_adjs(adj, flags)
             diff_steps = self.sde.N
             timesteps = torch.linspace(self.sde.T, self.eps, diff_steps, device=self.device)
-
             for i in trange(0, (diff_steps), desc="[Sampling]", position=1, leave=False):
                 t = timesteps[i]
                 vec_t = torch.ones(self.shape_adj[0], device=t.device) * t
-                adj, adj_mean = self.corrector.update(x, adj, flags, vec_t)
-                adj, adj_mean = self.predictor.update(x, adj, flags, vec_t)
+                adj, adj_mean = self.corrector.update(adj, flags, vec_t)
+                adj, adj_mean = self.predictor.update(adj, flags, vec_t)
 
         return (
             (adj_mean if self.denoise else adj),

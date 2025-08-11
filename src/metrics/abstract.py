@@ -99,7 +99,6 @@ class CrossEntropyMetric(Metric):
                 reduction="sum",
                 weight=None,
             )
-        # output = F.cross_entropy(preds, target, reduction="sum")
         self.total_ce += output
         self.total_samples += preds.size(0)
 
@@ -117,7 +116,6 @@ class KLDMetric(Metric):
         """Update state with predictions and targets.
         preds: Predictions from model   (bs * n, d) or (bs * n * n, d)
         target: Ground truth values     (bs * n, d) or (bs * n * n, d)."""
-        # target = torch.argmax(target, dim=-1)
         if weight is not None:
             output = KLDivLoss(reduction="none")(
                 preds,
@@ -133,7 +131,6 @@ class KLDMetric(Metric):
         output[output.isnan()] = 0  # zero-out masked places
 
         output = output.sum()
-        # output = F.cross_entropy(preds, target, reduction="sum")
         self.total_ce += output
         self.total_samples += preds.size(0)
 

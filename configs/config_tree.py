@@ -30,31 +30,43 @@ class DataConfig:
 
 @dataclass
 class ModelConfig:
-    max_feat_num: int = 14   # n_features + t_dims + 1
-    nhid: int = 32
-    num_layers: int = 5
-    num_linears: int = 2
-    c_init: int = 2
-    c_hid: int = 8
-    c_final: int = 4
-    adim: int = 32
-    num_heads: int = 4
-    t_dim: int = 6
-    conv: str = "GCN"
+    max_feat_num: int = 2
+    extra_features_type: str = 'rrwp'
+    rrwp_steps: int = 20
+    n_layers: int = 8
+    input_dims: dict = field(default_factory=lambda: {
+        "X": 20,    # rrwp_steps
+        "E": 20,    # rrwp_steps
+        "y": 5 + 1, # +1 for time conditioning
+    })
+    hidden_mlp_dims: dict = field(default_factory=lambda: {
+        'X': 128,
+        'E': 64,
+        'y': 128
+    })
+    hidden_dims: dict = field(default_factory=lambda: {
+        'dx': 256,
+        'de': 64,
+        'dy': 64,
+        'n_head': 8,
+        'dim_ffX': 256,
+        'dim_ffE': 64,
+        'dim_ffy': 256
+    })
+    output_dims: dict = field(default_factory=lambda: {
+        "X": 0,
+        "E": 2,
+        "y": 0,
+    })
 
 @dataclass
 class TrainConfig:
-    lr: float = 0.01
-    weight_decay: float = 0.0001
+    lr: float = 0.0002
+    amsgrad: bool = True
+    weight_decay: float = 1e-12
     eps: float = 1e-5
-    lr_schedule: bool = True
-    lr_decay: float = 0.999
     num_epochs: int = 5_000
-    grad_norm: float = 1.0
-    lambda_adj: float = 1.0
-    lambda_x: float = 0.0
-    features: List[str] = field(default_factory=lambda: ["degree", "cycles3", "cycles4", "eigenvectors"])
-    k_eig: Optional[int] = 4
+    lambda_train: float = 5.0
 
 @dataclass
 class SDEConfig:

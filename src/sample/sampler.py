@@ -29,16 +29,15 @@ class Sampler:
             speed=cfg_sde.speed)
 
     def _get_solver(self):
-        shape_x = (self.cfg.data.batch_size, self.max_num_nodes, self.cfg.data.max_feat_num)
         shape_adj = (self.cfg.data.batch_size, self.max_num_nodes, self.max_num_nodes)
 
         return PCSolver(
             sde=self.sde,
-            shape_x=shape_x,
             shape_adj=shape_adj,
             model=self.model,
-            node_features=self.cfg.train.features,
-            k_eig=self.cfg.train.k_eig,
+            node_features=self.cfg.model.extra_features_type,
+            rrwp_steps=self.cfg.model.rrwp_steps,
+            max_n_nodes=self.max_num_nodes,
             snr=self.cfg.sampler.snr,
             scale_eps=self.cfg.sampler.scale_eps,
             n_steps=self.cfg.sampler.n_steps,
@@ -84,7 +83,8 @@ class Sampler:
     def sample(self):
         num_rounds = math.ceil(len(self.datamodule.test_graphs) / self.cfg.data.batch_size)
         generated = []
-        for _ in range(num_rounds):
+        #for _ in range(num_rounds):
+        for _ in range(1):
             flags = self._make_flags()
             adj, _ = self.solver.solve(flags)
             samples = quantize(adj)
