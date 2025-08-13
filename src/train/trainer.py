@@ -7,12 +7,13 @@ import wandb
 from src.metrics.train import TrainLoss
 from src.models.transformer_model import GraphTransformer
 from src.sde.sde import JacobiSDE
+from src.sample.sampler import Sampler
 from src.features.extra_features import ExtraFeatures
 from src.utils import node_flags, gen_noise
 
 
 class DiffusionGraphModule(pl.LightningModule):
-    def __init__(self, cfg):
+    def __init__(self, cfg, sampling_metrics, ref_metrics):
         super().__init__()
         self.cfg = cfg
 
@@ -28,6 +29,9 @@ class DiffusionGraphModule(pl.LightningModule):
             act_fn_out=torch.nn.ReLU(),
         )
 
+        self.sampler = Sampler(cfg=cfg, model=self.model)
+        self.sampling_metrics = sampling_metrics
+        self.ref_metrics = ref_metrics
         self.sde = self._build_sde(cfg.sde)
         self.feature_extractor = ExtraFeatures(
             extra_features_type=cfg.model.extra_features_type,
@@ -80,13 +84,10 @@ class DiffusionGraphModule(pl.LightningModule):
 
         return {'loss': loss}
     
-    def validation_step(self, batch, batch_idx):
-        # Data
-        X, A = batch
+    def _val_denoiser(self, X, A):
         B, _, _ = X.shape
         flags = node_flags(A)
 
-        # Noise
         t = torch.rand(B, device=self.device) * (self.sde.T - self.loss_eps) + self.loss_eps
         A_t = self._perturb_data(A, flags, t)
         E_t = torch.cat([(1 - A_t).unsqueeze(-1), A_t.unsqueeze(-1)], dim=-1).float()
@@ -103,13 +104,30 @@ class DiffusionGraphModule(pl.LightningModule):
            adj_noisy=A_t[0],
            t_val=t[0].item(),
         )
-        wandb.log({"policy_big_plot": wandb.Image(fig)})
+        wandb.log({"val/denoiser": wandb.Image(fig)})
         plt.close(fig)
 
+    def _val_sampler(self):
+        samples, fig = self.sampler.sample()
+        wandb.log({"val/sampler": wandb.Image(fig)})
+        plt.close(fig)
+
+        self.sampling_metrics.reset()
+        _ = self.sampling_metrics.forward(
+            samples,
+            ref_metrics=self.ref_metrics,
+            local_rank=self.local_rank,
+            test=False,
+        )
+
+    def validation_step(self, batch, batch_idx):
+        X, A = batch
+        self._val_denoiser(X, A)
+        self._val_sampler()
         return
 
     def on_fit_end(self):
-        torch.save(self.model.state_dict(), f"checkpoints/{self.cfg.data.data}.pth")
+        torch.save(self.model.state_dict(), f"checkpoints/{self.cfg.data.data}/weights.pth")
 
     def _perturb_data(self, adj0, flags, T):
         B = adj0.shape[0]

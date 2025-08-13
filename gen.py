@@ -1,11 +1,12 @@
 from omegaconf import OmegaConf
 import torch
 import pytorch_lightning as pl
+import matplotlib.pyplot as plt
 
 from src.models.transformer_model import GraphTransformer
 from src.dataset.synth import SynthGraphDatasetModule
 from src.sample.sampler import Sampler
-from configs.config_ego import MainConfig
+from configs.config_sbm import MainConfig
 
 
 def main():
@@ -24,10 +25,14 @@ def main():
         act_fn_in=torch.nn.ReLU(),
         act_fn_out=torch.nn.ReLU(),
     )
-    model.load_state_dict(torch.load(f"checkpoints/{cfg.data.data}.pth"))
+    model.load_state_dict(torch.load(f"checkpoints/{cfg.data.data}/weights.pth"))
 
-    sampler = Sampler(cfg=cfg, datamodule=datamodule, model=model)
-    sampler.sample()
+    sampler = Sampler(cfg=cfg, model=model)
+    _, fig = sampler.sample()
+
+    save_path = f"samples/test.png"
+    plt.savefig(save_path, dpi=300)
+    plt.close(fig)
 
 if __name__ == "__main__":
     main()

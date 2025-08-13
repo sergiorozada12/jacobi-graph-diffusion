@@ -1,4 +1,3 @@
-from typing import List, Optional
 from dataclasses import dataclass, field
 
 @dataclass
@@ -7,6 +6,8 @@ class GeneralConfig:
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
+    check_val_every_n_epochs: int = 500
+    save_checkpoint_every_n_epochs: int = 1000
 
 @dataclass
 class SamplerConfig:
@@ -16,6 +17,7 @@ class SamplerConfig:
     scale_eps: float = 10.0
     n_steps: int = 5
     num_nodes: int = 10
+    test_graphs: int = 100
 
 @dataclass
 class DataConfig:
@@ -65,7 +67,7 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
-    num_epochs: int = 5_000
+    num_epochs: int = 10_000
     lambda_train: float = 5.0
 
 @dataclass

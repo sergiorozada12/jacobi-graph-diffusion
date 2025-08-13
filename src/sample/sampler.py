@@ -9,7 +9,7 @@ from src.utils import quantize, adjs_to_graphs
 
 
 class Sampler:
-    def __init__(self, cfg, datamodule, model):
+    def __init__(self, cfg, model):
         self.cfg = cfg
         self.device = torch.device(cfg.general.device)
         self.max_num_nodes = cfg.data.max_node_num
@@ -18,8 +18,6 @@ class Sampler:
         self.model = model.to(self.device)
         self.sde = self._get_sde(self.cfg.sde)
         self.solver = self._get_solver()
-
-        self.datamodule = datamodule
         
     def _get_sde(self, cfg_sde):
         return JacobiSDE(
@@ -76,12 +74,10 @@ class Sampler:
         fig.suptitle("Sampled Graphs", fontsize=16)
         plt.tight_layout()
         
-        save_path = f"samples/test.png"
-        plt.savefig(save_path, dpi=300)
-        plt.close(fig)
+        return fig
 
     def sample(self):
-        num_rounds = math.ceil(len(self.datamodule.test_graphs) / self.cfg.data.batch_size)
+        num_rounds = math.ceil(self.cfg.sampler.test_graphs / self.cfg.data.batch_size)
         generated = []
         #for _ in range(num_rounds):
         for _ in range(1):
@@ -90,4 +86,5 @@ class Sampler:
             samples = quantize(adj)
             graphs = adjs_to_graphs(samples, is_cuda=self.device.type != 'cpu')
             generated.extend(graphs)
-        self.plot_sampled_graphs(generated[:len(self.datamodule.test_graphs)])
+        fig = self.plot_sampled_graphs(generated)
+        return generated, fig

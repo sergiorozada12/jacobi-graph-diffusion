@@ -6,6 +6,8 @@ class GeneralConfig:
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
+    check_val_every_n_epochs: int = 500
+    save_checkpoint_every_n_epochs: int = 1000
 
 @dataclass
 class SamplerConfig:
@@ -15,6 +17,7 @@ class SamplerConfig:
     scale_eps: float = 0.1
     n_steps: int = 1
     num_nodes: int = 40
+    test_graphs: int = 100
 
 @dataclass
 class DataConfig:
