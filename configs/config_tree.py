@@ -15,7 +15,7 @@ class SamplerConfig:
     eps: float = 1e-4
     snr: float = 0.01
     scale_eps: float = 1.0
-    n_steps: int = 2
+    n_steps: int = 1
     num_nodes: int = 20
     test_graphs: int = 100
 
@@ -74,7 +74,7 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1000
+    num_scales: int = 1_000
     speed: float = 1.0
     order: int = 10
 

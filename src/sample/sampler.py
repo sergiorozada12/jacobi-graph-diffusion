@@ -9,7 +9,7 @@ from src.utils import quantize, adjs_to_graphs
 
 
 class Sampler:
-    def __init__(self, cfg, model):
+    def __init__(self, cfg, model, node_dist=None):
         self.cfg = cfg
         self.device = torch.device(cfg.general.device)
         self.max_num_nodes = cfg.data.max_node_num
@@ -18,6 +18,8 @@ class Sampler:
         self.model = model.to(self.device)
         self.sde = self._get_sde(self.cfg.sde)
         self.solver = self._get_solver()
+
+        self.node_dist = node_dist
         
     def _get_sde(self, cfg_sde):
         return JacobiSDE(
@@ -52,7 +54,13 @@ class Sampler:
             dtype=torch.bool,
             device=self.device
         )
-        flags[:, :self.num_nodes] = 1
+
+        if self.node_dist:
+            num_nodes = self.node_dist.sample_n(self.cfg.data.batch_size, self.device)
+            for i, n in enumerate(num_nodes):
+                flags[i, :n] = 1
+        else:
+            flags[:, :self.num_nodes] = 1
         return flags
 
     def plot_sampled_graphs(self, graph_list, num_graphs=20):

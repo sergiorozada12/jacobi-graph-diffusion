@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+import networkx as nx
 
 from src.utils import graph_list_to_dataset, quantize, adjs_to_graphs
 
@@ -23,19 +24,24 @@ class SynthGraphDatasetModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         with open(self.data_path, "rb") as f:
-            graph_list = pickle.load(f)
+            dataset = pickle.load(f)
 
-        np.random.seed(self.config.general.seed)
-        np.random.shuffle(graph_list)
+        train_graphs = dataset["train"]
+        val_graphs = dataset["val"]
+        test_graphs = dataset["test"]
 
-        n_total = len(graph_list)
-        n_test = int(n_total * self.test_split)
-        n_val = int(n_total * self.val_split)
-        n_train = n_total - n_test - n_val
-
-        self.train_graphs = graph_list[:n_train]
-        self.val_graphs = graph_list[n_train:n_train + n_val]
-        self.test_graphs = graph_list[n_train + n_val:]
+        self.train_graphs = [
+            nx.to_numpy_array(graph).fill_diagonal_(0)
+            for graph in train_graphs
+        ]
+        self.val_graphs = [
+            nx.to_numpy_array(graph).fill_diagonal_(0)
+            for graph in val_graphs
+        ]
+        self.test_graphs = [
+            nx.to_numpy_array(graph).fill_diagonal_(0)
+            for graph in test_graphs
+        ]
 
         self.train_ds = graph_list_to_dataset(
             self.train_graphs,
@@ -78,14 +84,6 @@ class SynthGraphDatasetModule(pl.LightningDataModule):
         all_counts = all_counts[: max_index + 1]
         all_counts = all_counts / all_counts.sum()
         return all_counts
-    
-class DistributionNodes:
-    def __init__(self, prob):
-        self.m = torch.distributions.Categorical(prob)
-
-    def sample_n(self, n_samples, device):
-        idx = self.m.sample((n_samples,))
-        return idx.to(device)
 
 def compute_reference_metrics(datamodule, sampling_metrics):
     print("Computing sampling metrics.")

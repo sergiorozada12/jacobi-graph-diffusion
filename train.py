@@ -8,6 +8,7 @@ from pytorch_lightning.loggers import WandbLogger
 from configs.config_planar import MainConfig
 from src.train.trainer import DiffusionGraphModule
 from src.dataset.synth import SynthGraphDatasetModule, compute_reference_metrics
+from src.dataset.utils import DistributionNodes
 from src.metrics.val import PlanarSamplingMetrics
 
 
@@ -18,13 +19,16 @@ def main():
     datamodule = SynthGraphDatasetModule(cfg)
     datamodule.setup()
 
+    node_dist = DistributionNodes(prob=datamodule.node_counts())
+
     sampling_metrics = PlanarSamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
     model = DiffusionGraphModule(
         cfg=cfg,
         sampling_metrics=sampling_metrics,
-        ref_metrics=ref_metrics
+        ref_metrics=ref_metrics,
+        node_dist=node_dist,
     )
 
     callbacks = []

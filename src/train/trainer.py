@@ -13,7 +13,7 @@ from src.utils import node_flags, gen_noise
 
 
 class DiffusionGraphModule(pl.LightningModule):
-    def __init__(self, cfg, sampling_metrics, ref_metrics):
+    def __init__(self, cfg, sampling_metrics, ref_metrics, node_dist):
         super().__init__()
         self.cfg = cfg
 
@@ -29,7 +29,7 @@ class DiffusionGraphModule(pl.LightningModule):
             act_fn_out=torch.nn.ReLU(),
         )
 
-        self.sampler = Sampler(cfg=cfg, model=self.model)
+        self.sampler = Sampler(cfg=cfg, model=self.model, node_dist=node_dist)
         self.sampling_metrics = sampling_metrics
         self.ref_metrics = ref_metrics
         self.sde = self._build_sde(cfg.sde)
