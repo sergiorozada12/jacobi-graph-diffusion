@@ -1,4 +1,3 @@
-from typing import List, Optional
 from dataclasses import dataclass, field
 
 @dataclass
@@ -7,21 +6,24 @@ class GeneralConfig:
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
+    check_val_every_n_epochs: int = 500
+    save_checkpoint_every_n_epochs: int = 1000
 
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
     eps: float = 1e-4
-    snr: float = 0.01
-    scale_eps: float = 2.0
+    snr: float = 0.0001
+    scale_eps: float = 1.0
     n_steps: int = 1
     num_nodes: int = 40
+    test_graphs: int = 100
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "sbm"
-    batch_size: int = 128
+    batch_size: int = 64
     max_node_num: int = 40
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -31,29 +33,42 @@ class DataConfig:
 @dataclass
 class ModelConfig:
     max_feat_num: int = 2
-    nhid: int = 32
-    num_layers: int = 5
-    num_linears: int = 2
-    c_init: int = 2
-    c_hid: int = 8
-    c_final: int = 4
-    adim: int = 32
-    num_heads: int = 4
-    conv: str = "GCN"
+    extra_features_type: str = 'rrwp'
+    rrwp_steps: int = 20
+    n_layers: int = 8
+    input_dims: dict = field(default_factory=lambda: {
+        "X": 20,    # rrwp_steps
+        "E": 20,    # rrwp_steps
+        "y": 5 + 1, # +1 for time conditioning
+    })
+    hidden_mlp_dims: dict = field(default_factory=lambda: {
+        'X': 128,
+        'E': 64,
+        'y': 128
+    })
+    hidden_dims: dict = field(default_factory=lambda: {
+        'dx': 256,
+        'de': 64,
+        'dy': 64,
+        'n_head': 8,
+        'dim_ffX': 256,
+        'dim_ffE': 64,
+        'dim_ffy': 256
+    })
+    output_dims: dict = field(default_factory=lambda: {
+        "X": 0,
+        "E": 2,
+        "y": 0,
+    })
 
 @dataclass
 class TrainConfig:
-    lr: float = 0.01
-    weight_decay: float = 0.0001
+    lr: float = 0.0002
+    amsgrad: bool = True
+    weight_decay: float = 1e-12
     eps: float = 1e-5
-    lr_schedule: bool = True
-    lr_decay: float = 0.999
     num_epochs: int = 5_000
-    grad_norm: float = 1.0
-    lambda_adj: float = 1.0
-    lambda_x: float = 0.1
-    features: List[str] = field(default_factory=lambda: ["degree"])
-    k_eig: Optional[int] = None
+    lambda_train: float = 5.0
 
 @dataclass
 class SDEConfig:

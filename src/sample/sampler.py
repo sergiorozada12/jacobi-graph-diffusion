@@ -9,7 +9,7 @@ from src.utils import quantize, adjs_to_graphs
 
 
 class Sampler:
-    def __init__(self, cfg, datamodule, model):
+    def __init__(self, cfg, model):
         self.cfg = cfg
         self.device = torch.device(cfg.general.device)
         self.max_num_nodes = cfg.data.max_node_num
@@ -18,8 +18,6 @@ class Sampler:
         self.model = model.to(self.device)
         self.sde = self._get_sde(self.cfg.sde)
         self.solver = self._get_solver()
-
-        self.datamodule = datamodule
         
     def _get_sde(self, cfg_sde):
         return JacobiSDE(
@@ -29,16 +27,15 @@ class Sampler:
             speed=cfg_sde.speed)
 
     def _get_solver(self):
-        shape_x = (self.cfg.data.batch_size, self.max_num_nodes, self.cfg.data.max_feat_num)
         shape_adj = (self.cfg.data.batch_size, self.max_num_nodes, self.max_num_nodes)
 
         return PCSolver(
             sde=self.sde,
-            shape_x=shape_x,
             shape_adj=shape_adj,
             model=self.model,
-            node_features=self.cfg.train.features,
-            k_eig=self.cfg.train.k_eig,
+            node_features=self.cfg.model.extra_features_type,
+            rrwp_steps=self.cfg.model.rrwp_steps,
+            max_n_nodes=self.max_num_nodes,
             snr=self.cfg.sampler.snr,
             scale_eps=self.cfg.sampler.scale_eps,
             n_steps=self.cfg.sampler.n_steps,
@@ -77,17 +74,17 @@ class Sampler:
         fig.suptitle("Sampled Graphs", fontsize=16)
         plt.tight_layout()
         
-        save_path = f"results_generated/test.png"
-        plt.savefig(save_path, dpi=300)
-        plt.close(fig)
+        return fig
 
     def sample(self):
-        num_rounds = math.ceil(len(self.datamodule.test_graphs) / self.cfg.data.batch_size)
+        num_rounds = math.ceil(self.cfg.sampler.test_graphs / self.cfg.data.batch_size)
         generated = []
-        for _ in range(num_rounds):
+        #for _ in range(num_rounds):
+        for _ in range(1):
             flags = self._make_flags()
             adj, _ = self.solver.solve(flags)
             samples = quantize(adj)
             graphs = adjs_to_graphs(samples, is_cuda=self.device.type != 'cpu')
             generated.extend(graphs)
-        self.plot_sampled_graphs(generated[:len(self.datamodule.test_graphs)])
+        fig = self.plot_sampled_graphs(generated)
+        return generated, fig

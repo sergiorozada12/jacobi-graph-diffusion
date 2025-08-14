@@ -41,9 +41,9 @@ class JacobiSDE:
             def __init__(self):
                 super().__init__(N, alpha, beta, speed, eps)
 
-            def sde(self, feature, x, flags, t, is_adj=True):
-                drift, diffusion = parent_sde(x, t) if is_adj else parent_sde(feature, t)
-                score = score_fn.compute_score(feature, x, flags, t)
+            def sde(self, x, flags, t):
+                drift, diffusion = parent_sde(x, t)
+                score = score_fn.compute_score(x, flags, t)
                 drift = drift - diffusion**2 * score
                 return drift, diffusion
 

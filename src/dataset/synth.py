@@ -1,10 +1,11 @@
 import os
+import copy
 import pickle
 import numpy as np
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
-from src.utils import graph_list_to_dataset
+from src.utils import graph_list_to_dataset, quantize, adjs_to_graphs
 
 
 class SynthGraphDatasetModule(pl.LightningDataModule):
@@ -62,3 +63,39 @@ class SynthGraphDatasetModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(self.test_ds, batch_size=self.batch_size, shuffle=False)
+
+def compute_reference_metrics(datamodule, sampling_metrics):
+    print("Computing sampling metrics.")
+    training_graphs = []
+    print("Converting training dataset to format required by sampling metrics.")
+    for data_batch in datamodule.train_dataloader():
+        _, A = data_batch
+        G = adjs_to_graphs(A, is_cuda=True)
+        training_graphs.extend(G)
+
+    dummy_kwargs = {
+        "local_rank": 0,
+        "ref_metrics": {"val": None, "test": None},
+    }
+
+    print("Computing validation reference metrics.")
+    val_sampling_metrics = copy.deepcopy(sampling_metrics)
+
+    val_ref_metrics = val_sampling_metrics.forward(
+        training_graphs,
+        test=False,
+        **dummy_kwargs,
+    )
+
+    print("Computing test reference metrics.")
+    test_sampling_metrics = copy.deepcopy(sampling_metrics)
+    test_ref_metrics = test_sampling_metrics.forward(
+        training_graphs,
+        test=True,
+        **dummy_kwargs,
+    )
+
+    return {
+        'val': val_ref_metrics,
+        'test': test_ref_metrics
+    }

@@ -1,14 +1,18 @@
 import torch
 
-from src.features.extra_features import NodeFeatureAugmentor
-
+from src.features.extra_features import ExtraFeatures
+import torch.nn.functional as F
 
 class JacobiScore:
-    def __init__(self, model, node_features, k_eig, order = 10, eps = 1e-12):
+    def __init__(self, model, extra_features, rrwp_steps, max_n_nodes, order=10, eps=1e-12):
         self.order = order
         self.eps = eps
         self.model = model
-        self.feature_extractor = NodeFeatureAugmentor(features=node_features, k_eig=k_eig)
+        self.feature_extractor = ExtraFeatures(
+            extra_features_type=extra_features,
+            rrwp_steps=rrwp_steps,
+            max_n_nodes=max_n_nodes,
+        )
 
         self.model.eval()
 
@@ -45,9 +49,21 @@ class JacobiScore:
         score = grad_xt / density.clamp_min(self.eps)
         return score
 
-    def compute_score(self, x, adj, flags, t):
-        adj_inp = torch.bernoulli(adj)
-        x_aug = self.feature_extractor.augment(x, adj_inp)
-        _, adj_0 = self.model(x_aug, adj_inp, flags)
-        score = self.legendre_score(adj_0, adj, t).float()
+    def compute_score(self, A_t_dist, flags, t):
+        A_t_triu = torch.bernoulli(torch.triu(A_t_dist, diagonal=1))
+        A_t = A_t_triu + A_t_triu.transpose(-1, -2)
+        E_t = torch.cat([(1 - A_t).unsqueeze(-1), A_t.unsqueeze(-1)], dim=-1).float()
+        extra_pred = self.feature_extractor(E_t, flags)
+        y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
+
+        pred = self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+        A_0_dist = F.softmax(pred.E, dim=-1)[..., 1:].sum(dim=-1).float()
+
+        flags_mask = (flags[:, :, None] * flags[:, None, :]).float()
+        A_0_dist = A_0_dist * flags_mask
+
+        A_0_triu = torch.bernoulli(torch.triu(A_0_dist, diagonal=1))
+        A_0 = A_0_triu + A_0_triu.transpose(-1, -2)
+
+        score = self.legendre_score(A_0, A_t_dist, t).float()
         return score
