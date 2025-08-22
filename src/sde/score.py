@@ -4,7 +4,7 @@ from src.features.extra_features import ExtraFeatures
 import torch.nn.functional as F
 
 class JacobiScore:
-    def __init__(self, model, extra_features, rrwp_steps, max_n_nodes, order=10, eps=1e-12):
+    def __init__(self, model, extra_features, rrwp_steps, max_n_nodes, order=10, eps=1e-10):
         self.order = order
         self.eps = eps
         self.model = model
@@ -38,11 +38,14 @@ class JacobiScore:
         P_x0, _     = self.legendre_poly_and_derivative(x0)     # [B, N, N, order]
         P_xt, dP_xt = self.legendre_poly_and_derivative(xt)     # [B, N, N, order]
 
-        n = torch.arange(self.order, dtype=torch.double, device=adj.device)
+        n = torch.arange(self.order, dtype=adj.dtype, device=adj.device)
         lambdas = 0.5 * (n * (n + 1))[None, None, None, :]               # [1, 1, 1, order]
         logdn = - torch.log(2 * n + 1)
         decay = torch.exp(-t[:, None, None, None] * lambdas - logdn)
 
+        #c = 4.0  # tune 2–8
+        #mask = (t[:, None, None, None] * lambdas <= c).to(P_xt.dtype)
+        #decay = decay * mask
         density = (decay * P_xt * P_x0).sum(dim=-1)                # [B, N, N]
         grad_xt = 2.0 * (decay * dP_xt * P_x0).sum(dim=-1)         # [B, N, N]
 
@@ -50,6 +53,9 @@ class JacobiScore:
         return score
 
     def compute_score(self, A_t_dist, flags, t):
+        flags_mask = (flags[:, :, None] * flags[:, None, :]).float()
+
+        A_t_dist = A_t_dist * flags_mask
         A_t_triu = torch.bernoulli(torch.triu(A_t_dist, diagonal=1))
         A_t = A_t_triu + A_t_triu.transpose(-1, -2)
         E_t = torch.cat([(1 - A_t).unsqueeze(-1), A_t.unsqueeze(-1)], dim=-1).float()
@@ -58,12 +64,15 @@ class JacobiScore:
 
         pred = self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
         A_0_dist = F.softmax(pred.E, dim=-1)[..., 1:].sum(dim=-1).float()
-
-        flags_mask = (flags[:, :, None] * flags[:, None, :]).float()
         A_0_dist = A_0_dist * flags_mask
 
-        A_0_triu = torch.bernoulli(torch.triu(A_0_dist, diagonal=1))
+        A_0_triu = torch.triu(A_0_dist, diagonal=1)
+        #A_0_triu = torch.bernoulli(torch.triu(A_0_dist, diagonal=1))
         A_0 = A_0_triu + A_0_triu.transpose(-1, -2)
 
-        score = self.legendre_score(A_0, A_t_dist, t).float()
-        return score
+        #A_t_dist = A_t_dist.clamp(0.001, 0.999)
+        #A_0 = A_0.clamp(0.001, 0.999)
+        score_raw = self.legendre_score(A_0, A_t_dist, t).float()
+        score_triu = torch.triu(score_raw, diagonal=1)
+        score = score_triu + score_triu.transpose(-1, -2)
+        return score * flags_mask

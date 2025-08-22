@@ -22,9 +22,9 @@ class SamplerConfig:
 @dataclass
 class DataConfig:
     dir: str = "data"
-    data: str = "sbm"
-    batch_size: int = 64
-    max_node_num: int = 40
+    data: str = "sbm_baseline"
+    batch_size: int = 8
+    max_node_num: int = 200
     max_feat_num: int = 1
     test_split: float = 0.2
     val_split: float = 0.1
@@ -67,7 +67,7 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
-    num_epochs: int = 5_000
+    num_epochs: int = 20_000
     lambda_train: float = 5.0
 
 @dataclass

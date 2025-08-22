@@ -12,18 +12,33 @@ class EulerMaruyamaPredictor:
         self.rsde = sde.reverse(score_fn)
         self.score_fn = score_fn
 
+    @torch.no_grad()
     def update(self, adj, flags, t):
         dt = -1.0 / self.rsde.N
-        noise = gen_noise(adj, flags)
+        device, dtype = adj.device, adj.dtype
+
+        noise = gen_noise(adj, flags).to(device=device, dtype=dtype)
         drift, diffusion = self.rsde.sde(adj, flags, t)
 
+        # EM update
+        sqrt_mdt = torch.sqrt(torch.tensor(-dt, device=device, dtype=dtype))
         adj_mean = adj + drift * dt
-        adj = adj_mean + diffusion * np.sqrt(-dt) * noise
+        adj_new  = adj_mean + diffusion * sqrt_mdt * noise
+        print('scd', (drift * dt).mean(), (drift * dt).min(), (drift * dt).max())
 
-        adj = torch.clamp(adj, 1e-5, 1 - 1e-5)
-        adj_mean = torch.clamp(adj_mean, 1e-5, 1 - 1e-5)
+        # Sanitize & project back to valid domain
+        adj_new  = torch.nan_to_num(adj_new,  nan=0.0, posinf=1.0, neginf=0.0)
+        adj_mean = torch.nan_to_num(adj_mean, nan=0.0, posinf=1.0, neginf=0.0)
 
-        return adj, adj_mean
+        # Enforce symmetry & zero diagonal, then mask, then clamp
+        adj_new = torch.triu(adj_new, 1); adj_new = adj_new + adj_new.transpose(-1, -2)
+        adj_mean = torch.triu(adj_mean, 1); adj_mean = adj_mean + adj_mean.transpose(-1, -2)
+
+        #mask = (flags[:, :, None] * flags[:, None, :]).to(dtype=dtype, device=device)
+        adj_new  = (adj_new).clamp(0.0, 1.0)
+        adj_mean = (adj_mean).clamp(0.0, 1.0)
+
+        return adj_new, adj_mean
 
 
 class LangevinCorrector:
@@ -34,23 +49,53 @@ class LangevinCorrector:
         self.scale_eps = scale_eps
         self.n_steps = n_steps
 
+    @torch.no_grad()
     def update(self, adj, flags, t):
-        n_steps = self.n_steps
         target_snr = self.snr
         seps = self.scale_eps
+        device, dtype = adj.device, adj.dtype
+        B = adj.shape[0]
+        mask = (flags[:, :, None] * flags[:, None, :]).to(dtype=dtype, device=device)
 
-        for _ in range(n_steps):
-            grad = self.score_fn.compute_score(adj, flags, t)
-            noise = gen_noise(adj, flags)
-            grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
-            noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
-            step_size = 2 * (target_snr * noise_norm / grad_norm) ** 2
-            adj_mean = adj + step_size * grad
-            adj = adj_mean + torch.sqrt(step_size * 2) * noise * seps
+        for _ in range(self.n_steps):
+            # diffusion & score
+            _, diffusion = self.sde.sde(adj, t)
+            score = self.score_fn.compute_score(adj.clamp(1e-5, 1-1e-5), flags, t)
+            force = (diffusion ** 2) * score
 
-            adj = torch.clamp(adj, 1e-5, 1 - 1e-5)
-            adj_mean = torch.clamp(adj_mean, 1e-5, 1 - 1e-5)
-        return adj, adj_mean
+            # Clip per sample
+            #M = mask.sum(dim=(1,2)).clamp(min=1.0)                  # active entries per sample
+            #tau_time = 100.0 * torch.sqrt(t).view(B,1) * torch.sqrt(M).view(B,1)  # (B,1)
+            #fvec  = force.reshape(B, -1)
+            #fnorm = fvec.norm(dim=-1, keepdim=True).clamp_min(1e-12)             # (B,1)
+            #scale = (tau_time / fnorm).clamp(max=1.0)                             # (B,1)
+            #force = (fvec * scale).view_as(force)
+
+            # Target-SNR step size per sample
+            noise = gen_noise(adj, flags).to(device=device, dtype=dtype)
+            f_norm = force.reshape(B, -1).norm(dim=-1, keepdim=True).clamp_min(1e-12)  # (B,1)
+            n_norm = noise.reshape(B, -1).norm(dim=-1, keepdim=True).clamp_min(1e-12)  # (B,1)
+            step_size = 2.0 * (target_snr * n_norm / f_norm).pow(2)  # (B,1)
+            step_size = step_size.view(B, 1, 1)
+
+            # Update
+            adj_mean = adj + step_size * force
+            adj_new  = adj_mean + torch.sqrt(2.0 * step_size) * noise * seps
+            #print('scale', scale.mean())
+            print('stepsize', step_size.mean())
+
+            # Sanitize non-finite
+            adj_new  = torch.nan_to_num(adj_new,  nan=0.0, posinf=1.0, neginf=0.0)
+            adj_mean = torch.nan_to_num(adj_mean, nan=0.0, posinf=1.0, neginf=0.0)
+
+            # Symmetry, mask, clamp
+            adj_new = torch.triu(adj_new, 1); adj_new = adj_new + adj_new.transpose(-1, -2)
+            adj_mean = torch.triu(adj_mean, 1); adj_mean = adj_mean + adj_mean.transpose(-1, -2)
+
+            adj_new  = (adj_new).clamp(0.0, 1.0)
+            adj_mean = (adj_mean).clamp(0.0, 1.0)
+
+        return adj_new, adj_mean
 
 
 class PCSolver:
@@ -97,7 +142,7 @@ class PCSolver:
             for i in trange(0, (diff_steps), desc="[Sampling]", position=1, leave=False):
                 t = timesteps[i]
                 vec_t = torch.ones(self.shape_adj[0], device=t.device) * t
-                adj, adj_mean = self.corrector.update(adj, flags, vec_t)
+                #adj, adj_mean = self.corrector.update(adj, flags, vec_t)
                 adj, adj_mean = self.predictor.update(adj, flags, vec_t)
 
         return (

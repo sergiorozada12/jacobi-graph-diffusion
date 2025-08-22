@@ -1,5 +1,4 @@
 import os
-import copy
 import pickle
 import numpy as np
 import torch
@@ -7,10 +6,10 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 import networkx as nx
 
-from src.utils import graph_list_to_dataset, quantize, adjs_to_graphs
+from src.utils import graph_list_to_dataset
 
 
-class SynthGraphDatasetModule(pl.LightningDataModule):
+class SpectreDatasetModule(pl.LightningDataModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -26,22 +25,9 @@ class SynthGraphDatasetModule(pl.LightningDataModule):
         with open(self.data_path, "rb") as f:
             dataset = pickle.load(f)
 
-        train_graphs = dataset["train"]
-        val_graphs = dataset["val"]
-        test_graphs = dataset["test"]
-
-        self.train_graphs = [
-            nx.to_numpy_array(graph).fill_diagonal_(0)
-            for graph in train_graphs
-        ]
-        self.val_graphs = [
-            nx.to_numpy_array(graph).fill_diagonal_(0)
-            for graph in val_graphs
-        ]
-        self.test_graphs = [
-            nx.to_numpy_array(graph).fill_diagonal_(0)
-            for graph in test_graphs
-        ]
+        self.train_graphs = dataset["train"]
+        self.val_graphs = dataset["val"]
+        self.test_graphs = dataset["test"]
 
         self.train_ds = graph_list_to_dataset(
             self.train_graphs,
@@ -84,39 +70,3 @@ class SynthGraphDatasetModule(pl.LightningDataModule):
         all_counts = all_counts[: max_index + 1]
         all_counts = all_counts / all_counts.sum()
         return all_counts
-
-def compute_reference_metrics(datamodule, sampling_metrics):
-    print("Computing sampling metrics.")
-    training_graphs = []
-    print("Converting training dataset to format required by sampling metrics.")
-    for data_batch in datamodule.train_dataloader():
-        _, A = data_batch
-        G = adjs_to_graphs(A, is_cuda=True)
-        training_graphs.extend(G)
-
-    dummy_kwargs = {
-        "local_rank": 0,
-        "ref_metrics": {"val": None, "test": None},
-    }
-
-    print("Computing validation reference metrics.")
-    val_sampling_metrics = copy.deepcopy(sampling_metrics)
-
-    val_ref_metrics = val_sampling_metrics.forward(
-        training_graphs,
-        test=False,
-        **dummy_kwargs,
-    )
-
-    print("Computing test reference metrics.")
-    test_sampling_metrics = copy.deepcopy(sampling_metrics)
-    test_ref_metrics = test_sampling_metrics.forward(
-        training_graphs,
-        test=True,
-        **dummy_kwargs,
-    )
-
-    return {
-        'val': val_ref_metrics,
-        'test': test_ref_metrics
-    }

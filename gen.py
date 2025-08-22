@@ -4,23 +4,25 @@ import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 
 from src.models.transformer_model import GraphTransformer
-from src.dataset.synth import SynthGraphDatasetModule, compute_reference_metrics
-from src.dataset.utils import DistributionNodes
+from src.dataset.synth import SynthGraphDatasetModule
+from src.dataset.spectre import SpectreDatasetModule
+from src.dataset.utils import DistributionNodes, compute_reference_metrics
 from src.sample.sampler import Sampler
-from configs.config_tree import MainConfig
-from src.metrics.val import TreeSamplingMetrics
+#from configs.config_tree import MainConfig
+from configs.config_planar import MainConfig
+from src.metrics.val import TreeSamplingMetrics, PlanarSamplingMetrics
 
 
 def main():
     cfg = OmegaConf.structured(MainConfig())
     _ = pl.seed_everything(cfg.general.seed)
 
-    datamodule = SynthGraphDatasetModule(cfg)
+    datamodule = SpectreDatasetModule(cfg)
     datamodule.setup()
 
     node_dist = DistributionNodes(prob=datamodule.node_counts())
 
-    sampling_metrics = TreeSamplingMetrics(datamodule)
+    sampling_metrics = PlanarSamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
     model = GraphTransformer(
@@ -46,7 +48,7 @@ def main():
         samples,
         ref_metrics=ref_metrics,
         local_rank=0,
-        test=False,
+        test=True,
     )
 
     print('------------------------------------------------------------------------------------')

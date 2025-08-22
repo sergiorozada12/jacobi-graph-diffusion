@@ -1,27 +1,35 @@
 from omegaconf import OmegaConf
+from pathlib import Path
 
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
-from configs.config_planar import MainConfig
+from configs.config_tree import MainConfig
+#from configs.config_sbm import MainConfig
+#from configs.config_planar import MainConfig
+
+
 from src.train.trainer import DiffusionGraphModule
-from src.dataset.synth import SynthGraphDatasetModule, compute_reference_metrics
-from src.dataset.utils import DistributionNodes
-from src.metrics.val import PlanarSamplingMetrics
+from src.dataset.synth import SynthGraphDatasetModule
+from src.dataset.spectre import SpectreDatasetModule
+from src.dataset.utils import DistributionNodes, compute_reference_metrics
+from src.metrics.val import TreeSamplingMetrics, SBMSamplingMetrics, PlanarSamplingMetrics
 
 
 def main():
     cfg = OmegaConf.structured(MainConfig())
     _ = pl.seed_everything(cfg.general.seed)
 
-    datamodule = SynthGraphDatasetModule(cfg)
+    datamodule = SpectreDatasetModule(cfg)
     datamodule.setup()
 
     node_dist = DistributionNodes(prob=datamodule.node_counts())
 
-    sampling_metrics = PlanarSamplingMetrics(datamodule)
+    sampling_metrics = TreeSamplingMetrics(datamodule)
+    # sampling_metrics = SBMSamplingMetrics(datamodule)
+    # sampling_metrics = PlanarSamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
     model = DiffusionGraphModule(
@@ -31,9 +39,12 @@ def main():
         node_dist=node_dist,
     )
 
+    ckpt_dir = Path(f"checkpoints/{cfg.data.data}")
+    ckpt_path = ckpt_dir / "last.ckpt"
+
     callbacks = []
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f"checkpoints/{cfg.data.data}",
+        dirpath=str(ckpt_dir),
         filename="{epoch}",
         save_top_k=-1,
         every_n_epochs=cfg.general.save_checkpoint_every_n_epochs,
@@ -41,7 +52,15 @@ def main():
     )
     callbacks.append(checkpoint_callback)
 
-    logger = WandbLogger(project="jacobi-graph-diffusion", name="planar-new-test")
+    # wandb_run_id = "zjd7dbh7" # Planar
+    wandb_run_id = "y1dt6kl0" # Tree
+    logger = WandbLogger(
+        project="jacobi-graph-diffusion",
+        name="tree-spectre",
+        id=wandb_run_id,
+        resume="must" if wandb_run_id else None,
+    )
+
     trainer = Trainer(
         accelerator=cfg.general.device,
         devices=[1],
@@ -53,7 +72,10 @@ def main():
         logger=logger,
     )
 
-    trainer.fit(model, datamodule=datamodule)
+    if ckpt_path.exists():
+        trainer.fit(model, datamodule=datamodule, ckpt_path=str(ckpt_path))
+    else:
+        trainer.fit(model, datamodule=datamodule)
 
 if __name__ == "__main__":
     main()

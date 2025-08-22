@@ -13,7 +13,7 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = True
     eps: float = 1e-4
-    snr: float = 0.01
+    snr: float = 0.1
     scale_eps: float = 1.0
     n_steps: int = 1
     num_nodes: int = 20
@@ -22,9 +22,9 @@ class SamplerConfig:
 @dataclass
 class DataConfig:
     dir: str = "data"
-    data: str = "tree"
-    batch_size: int = 128
-    max_node_num: int = 20
+    data: str = "tree_baseline"
+    batch_size: int = 32
+    max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
     val_split: float = 0.1
@@ -63,11 +63,11 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    lr: float = 0.0002
+    lr: float = 0.0002 / 10
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
-    num_epochs: int = 10_000
+    num_epochs: int = 40_000
     lambda_train: float = 5.0
 
 @dataclass

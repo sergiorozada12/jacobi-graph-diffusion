@@ -125,6 +125,7 @@ def graphs_to_tensor(graph_list, max_node_num):
     for g in graph_list:
         node_list = list(g.nodes())
         adj = nx.to_numpy_array(g, nodelist=node_list)
+        np.fill_diagonal(adj, 0)
         padded = pad_adjs(adj, max_node_num)
         adjs_list.append(padded)
 

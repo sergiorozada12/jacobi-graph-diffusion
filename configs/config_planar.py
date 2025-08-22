@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GeneralConfig:
-    seed: int = 42
+    seed: int = 42 # 58 or 42 or 5 works good
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
@@ -11,20 +11,20 @@ class GeneralConfig:
 
 @dataclass
 class SamplerConfig:
-    noise_removal: bool = False
+    noise_removal: bool = True
     eps: float = 1e-4
-    snr: float = 0.01
-    scale_eps: float = 10.0
-    n_steps: int = 5
+    snr: float = 0.2
+    scale_eps: float = 0.01
+    n_steps: int = 1
     num_nodes: int = 10
     test_graphs: int = 100
 
 @dataclass
 class DataConfig:
     dir: str = "data"
-    data: str = "planar"
-    batch_size: int = 128
-    max_node_num: int = 20
+    data: str = "planar_baseline"
+    batch_size: int = 100
+    max_node_num: int = 70
     max_feat_num: int = 1
     test_split: float = 0.2
     val_split: float = 0.1
@@ -67,7 +67,7 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
-    num_epochs: int = 10_000
+    num_epochs: int = 70_000
     lambda_train: float = 5.0
 
 @dataclass
@@ -76,7 +76,7 @@ class SDEConfig:
     beta: float = 1.0
     num_scales: int = 1_000
     speed: float = 1.0
-    order: int = 10
+    order: int = 30
 
 @dataclass
 class MainConfig:
