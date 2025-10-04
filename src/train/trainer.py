@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 import wandb
+import math
 
 from src.metrics.train import TrainLoss
 from src.models.transformer_model import GraphTransformer
@@ -47,7 +48,11 @@ class DiffusionGraphModule(pl.LightningModule):
             alpha=cfg_sde.alpha,
             beta=cfg_sde.beta,
             N=cfg_sde.num_scales,
-            speed=cfg_sde.speed)
+            s_min=cfg_sde.s_min,
+            s_max=cfg_sde.s_max,
+            eps=cfg_sde.eps_sde,
+            max_force=cfg_sde.max_force,
+        )
 
     def configure_optimizers(self):    
         opt = torch.optim.AdamW(
@@ -65,18 +70,25 @@ class DiffusionGraphModule(pl.LightningModule):
         flags = node_flags(A)
 
         # Noise
-        t = torch.rand(B, device=self.device) * (self.sde.T - self.loss_eps) + self.loss_eps
-        A_t = self._perturb_data(A, flags, t)
+        #t = torch.rand(B, device=self.device) * (self.sde.T - self.loss_eps) + self.loss_eps
+        u = torch.rand(B, device=self.device)
+        t = torch.exp((1.0 - u) * math.log(self.sde.T) + u * math.log(self.loss_eps))
+        A_t, A_t_sample = self._perturb_data(A, flags, t)
 
         E = torch.cat([(1 - A).unsqueeze(-1), A.unsqueeze(-1)], dim=-1).float()
         E_t = torch.cat([(1 - A_t).unsqueeze(-1), A_t.unsqueeze(-1)], dim=-1).float()
+        E_t_sample = torch.cat([(1 - A_t_sample).unsqueeze(-1), A_t_sample.unsqueeze(-1)], dim=-1).float()
 
         # Features
-        extra_pred = self.feature_extractor(E_t, flags)
+        # extra_pred = self.feature_extractor(E_t, flags)
+        extra_pred = self.feature_extractor(E_t_sample, flags)
         y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
 
         # Prediction
         pred = self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+        #pred = self.model(extra_pred.X.float(), E_t.float(), y, flags)
+        #E_inp = torch.cat([extra_pred.E.float(), E_t.float()], dim=-1) 
+        #pred = self.model(extra_pred.X.float(), E_inp, y, flags)
         loss = self.train_loss(
             masked_pred_E=pred.E,
             true_E=E,
@@ -88,14 +100,21 @@ class DiffusionGraphModule(pl.LightningModule):
         B, _, _ = X.shape
         flags = node_flags(A)
 
-        t = torch.rand(B, device=self.device) * (self.sde.T - self.loss_eps) + self.loss_eps
-        A_t = self._perturb_data(A, flags, t)
+        #t = torch.rand(B, device=self.device) * (self.sde.T - self.loss_eps) + self.loss_eps
+        u = torch.rand(B, device=self.device)
+        t = torch.exp((1.0 - u) * math.log(self.sde.T) + u * math.log(self.loss_eps))
+        A_t, A_t_sample = self._perturb_data(A, flags, t)
         E_t = torch.cat([(1 - A_t).unsqueeze(-1), A_t.unsqueeze(-1)], dim=-1).float()
+        E_t_sample = torch.cat([(1 - A_t_sample).unsqueeze(-1), A_t_sample.unsqueeze(-1)], dim=-1).float()
 
         with torch.no_grad():
-            extra_pred = self.feature_extractor(E_t, flags)
+            #extra_pred = self.feature_extractor(E_t, flags)
+            extra_pred = self.feature_extractor(E_t_sample, flags)
             y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
             pred = self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+            #pred = self.model(extra_pred.X.float(), E_t.float(), y, flags)
+            #E_inp = torch.cat([extra_pred.E.float(), E_t.float()], dim=-1)
+            #pred = self.model(extra_pred.X.float(), E_inp, y, flags)
             A_pred = F.softmax(pred.E, dim=-1)[..., 1:].sum(dim=-1).float()
         
         fig = self._plot_graph_comparison(
@@ -157,10 +176,13 @@ class DiffusionGraphModule(pl.LightningModule):
             adj = torch.where(active.view(B, 1, 1), step, adj)
             std = torch.where(active.view(B, 1, 1), std_all, std)
 
-        adj_triu = torch.bernoulli(torch.triu(adj, diagonal=1))
-        adj_sample = adj_triu + adj_triu.transpose(-1, -2)
+        adj_triu = torch.triu(adj, diagonal=1)
+        adj_triu_sample = torch.bernoulli(adj_triu)
 
-        return adj_sample
+        adj = adj_triu + adj_triu.transpose(-1, -2)
+        adj_sample = adj_triu_sample + adj_triu_sample.transpose(-1, -2)
+
+        return adj, adj_sample
 
     def _plot_graph_comparison(self, adj_true, adj_recon, adj_noisy, t_val=None):
         adj_true_np = adj_true.detach().cpu().numpy()

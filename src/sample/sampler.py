@@ -26,9 +26,10 @@ class Sampler:
             alpha=cfg_sde.alpha,
             beta=cfg_sde.beta,
             N=cfg_sde.num_scales,
-            #speed=cfg_sde.speed
-            s_min=1.0,
-            s_max=1.0,
+            s_min=cfg_sde.s_min,
+            s_max=cfg_sde.s_max,
+            eps=cfg_sde.eps_sde,
+            max_force=cfg_sde.max_force,
         )
 
     def _get_solver(self):
@@ -45,9 +46,13 @@ class Sampler:
             scale_eps=self.cfg.sampler.scale_eps,
             n_steps=self.cfg.sampler.n_steps,
             denoise=self.cfg.sampler.noise_removal,
-            eps=self.cfg.sampler.eps,
+            eps=self.cfg.sampler.eps_time,
             device=self.device,
             order=self.cfg.sde.order,
+            sample_target=self.cfg.sde.sample_target,
+            eps_score=self.cfg.sde.eps_score,
+            eps_score_dist=self.cfg.sde.eps_score_dist,
+            use_corrector=self.cfg.sampler.use_corrector,
         )
 
     def _make_flags(self):
@@ -109,9 +114,6 @@ class Sampler:
                 n = max(1, G.number_of_nodes())
                 avg_deg = sum(dict(G.degree()).values()) / n
                 ax.set_title(f"avg deg: {avg_deg:.2f}", fontsize=8)
-
-        # Optional: overall title (keep or remove as you like)
-        # fig.suptitle("Sampled Graphs", fontsize=16)
 
         plt.tight_layout()
         return fig

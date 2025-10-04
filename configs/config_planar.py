@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GeneralConfig:
-    seed: int = 42 # 58 or 42 or 5 works good
+    seed: int = 5 # 58 or 42 or 5 works good
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
@@ -12,12 +12,13 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps: float = 1e-4
-    snr: float = 0.2
-    scale_eps: float = 0.01
-    n_steps: int = 1
+    eps_time: float = 1e-3
+    snr: float = 0.02 # This goes good with 0.000001 scale_eps = 0
+    scale_eps: float = 0.0001 # 0.01 ratio 54
+    n_steps: int = 2
     num_nodes: int = 10
     test_graphs: int = 100
+    use_corrector: bool = True
 
 @dataclass
 class DataConfig:
@@ -63,7 +64,7 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    lr: float = 0.0002
+    lr: float = 0.0002 # 0.0002
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
@@ -75,8 +76,14 @@ class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
     num_scales: int = 1_000
-    speed: float = 1.0
-    order: int = 30
+    s_min: float = 1.0
+    s_max: float = 1.0
+    order: int = 30 # 30 works good for predictor
+    sample_target: bool = False
+    eps_sde: float = 1e-2 #3.1622776601e-3 # 3.16 works worse lol
+    max_force: float = 1000.0
+    eps_score: float = 1e-10
+    eps_score_dist: float = 1e-5
 
 @dataclass
 class MainConfig:

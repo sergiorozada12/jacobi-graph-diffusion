@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GeneralConfig:
-    seed: int = 42
+    seed: int = 42 # 58 or 42 or 5 works good
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
@@ -12,18 +12,19 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps: float = 1e-4
-    snr: float = 0.0001
-    scale_eps: float = 1.0
+    eps_time: float = 1e-3
+    snr: float = 0.02 # This goes good with 0.000001 scale_eps = 0
+    scale_eps: float = 0.0001 # 0.01 ratio 54
     n_steps: int = 1
-    num_nodes: int = 40
-    test_graphs: int = 100
+    num_nodes: int = 10
+    test_graphs: int = 50
+    use_corrector: bool = False
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "sbm_baseline"
-    batch_size: int = 8
+    batch_size: int = 50
     max_node_num: int = 200
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -35,7 +36,7 @@ class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
-    n_layers: int = 8
+    n_layers: int = 10
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
         "E": 20,    # rrwp_steps
@@ -67,16 +68,22 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
-    num_epochs: int = 20_000
+    num_epochs: int = 22_000
     lambda_train: float = 5.0
 
 @dataclass
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1000
-    speed: float = 1.0
-    order: int = 10
+    num_scales: int = 1_000
+    s_min: float = 1.0
+    s_max: float = 1.0
+    order: int = 30
+    sample_target: bool = True # True with order 10 and mindiff 0.1 best convo so far
+    eps_sde: float = 1e-1
+    max_force: float = 1000.0
+    eps_score: float = 1e-10
+    eps_score_dist: float = 1e-5
 
 @dataclass
 class MainConfig:

@@ -8,10 +8,9 @@ from src.dataset.synth import SynthGraphDatasetModule
 from src.dataset.spectre import SpectreDatasetModule
 from src.dataset.utils import DistributionNodes, compute_reference_metrics
 from src.sample.sampler import Sampler
-#from configs.config_tree import MainConfig
-#from configs.config_planar import MainConfig
-from configs.config_sbm import MainConfig
-from src.metrics.val import TreeSamplingMetrics, PlanarSamplingMetrics, SBMSamplingMetrics
+from configs.config_tree import MainConfig
+# from configs.config_planar import MainConfig
+from src.metrics.val import TreeSamplingMetrics, PlanarSamplingMetrics
 
 
 def main():
@@ -24,8 +23,7 @@ def main():
     node_dist = DistributionNodes(prob=datamodule.node_counts())
 
     # sampling_metrics = PlanarSamplingMetrics(datamodule)
-    # sampling_metrics = TreeSamplingMetrics(datamodule)
-    sampling_metrics = SBMSamplingMetrics(datamodule)
+    sampling_metrics = TreeSamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
     model = GraphTransformer(

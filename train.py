@@ -52,8 +52,12 @@ def main():
     )
     callbacks.append(checkpoint_callback)
 
+    # wandb_run_id = "or4yxkkd" # SBM
+    # wandb_run_id = "k3heg161" # Tree 2
+    # wandb_run_id = "dhoxuvon" # Planar 2
     # wandb_run_id = "zjd7dbh7" # Planar
-    wandb_run_id = "y1dt6kl0" # Tree
+    # wandb_run_id = "y1dt6kl0" # Tree
+    wandb_run_id = None
     logger = WandbLogger(
         project="jacobi-graph-diffusion",
         name="tree-spectre",

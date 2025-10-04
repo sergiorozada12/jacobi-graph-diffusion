@@ -268,3 +268,50 @@ class PlaceHolder:
             y = self.y[i] if self.y is not None else None
             graph_list.append(PlaceHolder(X=x, E=e, y=y))
         return graph_list
+
+def assert_symmetric_and_masked(adj: torch.Tensor, flags: torch.Tensor, tol: float = 1e-6):
+    """
+    adj:   [B, N, N]
+    flags: [B, N] (1 for active nodes, 0 for inactive)
+    tol:   tolerance for numerical checks
+    """
+    B, N, _ = adj.shape
+
+    # Symmetry check
+    diff_sym = (adj - adj.transpose(-1, -2)).abs().max().item()
+    assert diff_sym < tol, f"Adj not symmetric, max diff = {diff_sym}"
+
+    # Diagonal zero check
+    diag_vals = adj.diagonal(dim1=-2, dim2=-1)
+    max_diag = diag_vals.abs().max().item()
+    assert max_diag < tol, f"Diagonal not zero, max diag = {max_diag}"
+
+    # Flags masking check (inactive rows/cols must be all zero)
+    flags_mask = (flags[:, :, None] * flags[:, None, :]).float()  # [B,N,N]
+    masked = adj * (1 - flags_mask)
+    max_off = masked.abs().max().item()
+    assert max_off < tol, f"Non-flagged entries not zero, max = {max_off}"
+
+
+def assert_symmetric_and_masked_E(E: torch.Tensor, flags: torch.Tensor, tol: float = 1e-6):
+    """
+    E:     [B, N, N, d]  edge features
+    flags: [B, N] (1 = active, 0 = inactive)
+    tol:   tolerance for numerical checks
+    """
+    B, N, _, d = E.shape
+
+    # Symmetry check
+    diff_sym = (E - E.transpose(1, 2)).abs().max().item()
+    assert diff_sym < tol, f"E not symmetric, max diff = {diff_sym}"
+
+    # Diagonal zero check
+    diag_vals = E.diagonal(dim1=1, dim2=2)  # [B, N, d]
+    max_diag = diag_vals.abs().max().item()
+    assert max_diag < tol, f"E diagonal not zero, max diag = {max_diag}"
+
+    # Flags masking check
+    flags_mask = (flags[:, :, None] * flags[:, None, :]).unsqueeze(-1).float()  # [B, N, N, 1]
+    masked = E * (1 - flags_mask)
+    max_off = masked.abs().max().item()
+    assert max_off < tol, f"E has non-flagged entries not zero, max = {max_off}"

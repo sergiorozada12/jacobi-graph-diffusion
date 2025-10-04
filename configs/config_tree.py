@@ -12,18 +12,19 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps: float = 1e-4
+    eps_time: float = 1e-4
     snr: float = 0.1
-    scale_eps: float = 1.0
-    n_steps: int = 1
+    scale_eps: float = 10.0
+    n_steps: int = 3
     num_nodes: int = 20
-    test_graphs: int = 100
+    test_graphs: int = 32
+    use_corrector: bool = False
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "tree_baseline"
-    batch_size: int = 32
+    batch_size: int = 32 # 32
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -35,10 +36,10 @@ class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
-    n_layers: int = 8
+    n_layers: int = 10
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
-        "E": 20,    # rrwp_steps
+        "E": 20,    # rrwp_steps + distribution 20 + 2
         "y": 5 + 1, # +1 for time conditioning
     })
     hidden_mlp_dims: dict = field(default_factory=lambda: {
@@ -63,20 +64,26 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    lr: float = 0.0002 / 10
+    lr: float = 0.0002
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-5
-    num_epochs: int = 40_000
+    eps: float = 1e-4
+    num_epochs: int = 60_000
     lambda_train: float = 5.0
 
 @dataclass
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1_000
-    speed: float = 1.0
-    order: int = 10
+    num_scales: int = 1000
+    s_min: float = 0.5
+    s_max: float = 0.5
+    order: int = 30
+    sample_target: bool = True # True in general
+    eps_sde: float = 1e-1
+    max_force: float = 1000.0
+    eps_score: float = 1e-10
+    eps_score_dist: float = 1e-5
 
 @dataclass
 class MainConfig:
