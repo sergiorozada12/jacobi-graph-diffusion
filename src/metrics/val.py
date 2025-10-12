@@ -16,6 +16,7 @@ import numpy as np
 import networkx as nx
 import subprocess as sp
 import concurrent.futures
+import powerlaw
 
 import pygsp as pg
 import secrets
@@ -625,7 +626,7 @@ def eval_acc_grid_graph(G_list, grid_start=10, grid_end=20):
 
 def eval_acc_sbm_graph(
     G_list,
-    p_intra=0.3,
+    p_intra=0.4,    # 0.3 for the SPECTRE, 0.4 for the 2-COMMS
     p_inter=0.005,
     strict=True,
     refinement_steps=100,
@@ -659,6 +660,16 @@ def eval_acc_planar_graph(G_list):
     count = 0
     for gg in G_list:
         if is_planar_graph(gg):
+            count += 1
+    return count / float(len(G_list))
+
+
+def eval_acc_pa_graph(G_list):
+    if len(G_list) == 0:
+        return 0.0
+    count = 0
+    for gg in G_list:
+        if is_pa_graph(gg):
             count += 1
     return count / float(len(G_list))
 
@@ -782,6 +793,49 @@ def is_sbm_graph(G, p_intra=0.3, p_inter=0.005, strict=True, refinement_steps=10
         return p > 0.9  # p value < 10 %
     else:
         return p
+
+
+def is_pa_graph(
+    G,
+    alpha_range=(2.2, 3.4),
+    significance_level=0.1,
+    hub_scaling=0.6,
+):
+    if not nx.is_connected(G):
+        return False
+    degrees = np.array([d for _, d in G.degree()], dtype=int)
+    degrees = degrees[degrees > 0]
+    if degrees.size < 5:
+        return False
+    base_min_degree = int(degrees.min())
+    try:
+        fit = powerlaw.Fit(degrees, discrete=True, verbose=False)
+    except Exception:
+        return False
+    alpha = getattr(fit.power_law, "alpha", np.nan)
+    if not np.isfinite(alpha):
+        return False
+    if not (alpha_range[0] <= alpha <= alpha_range[1]):
+        return False
+    xmin = getattr(fit.power_law, "xmin", np.nan)
+    if not np.isfinite(xmin):
+        return False
+    tail_count = np.sum(degrees >= xmin)
+    if tail_count < 5:
+        return False
+    try:
+        R, p = fit.distribution_compare("power_law", "exponential", normalized_ratio=True)
+    except Exception:
+        return False
+    if not np.isfinite(R) or not np.isfinite(p):
+        return False
+    if R < 0 and p < significance_level:
+        return False
+    max_deg = degrees.max()
+    n = G.number_of_nodes()
+    if max_deg < hub_scaling * base_min_degree * np.sqrt(n):
+        return False
+    return True
 
 
 def eval_fraction_isomorphic(fake_graphs, train_graphs):
@@ -1014,6 +1068,14 @@ class SpectreSamplingMetrics(nn.Module):
             if wandb.run:
                 wandb.run.summary["sbm_acc"] = sbm_acc
 
+        if "pa" in self.metrics_list:
+            if local_rank == 0:
+                print("Computing PA accuracy...")
+            pa_acc = eval_acc_pa_graph(networkx_graphs)
+            to_log["pa_acc"] = pa_acc
+            if wandb.run:
+                wandb.run.summary["pa_acc"] = pa_acc
+
         if "planar" in self.metrics_list:
             if local_rank == 0:
                 print("Computing planar accuracy...")
@@ -1034,6 +1096,7 @@ class SpectreSamplingMetrics(nn.Module):
             "sbm" in self.metrics_list
             or "planar" in self.metrics_list
             or "tree" in self.metrics_list
+            or "pa" in self.metrics_list
         ):
             if local_rank == 0:
                 print("Computing all fractions...")
@@ -1043,6 +1106,8 @@ class SpectreSamplingMetrics(nn.Module):
                 validity_func = is_planar_graph
             elif "tree" in self.metrics_list:
                 validity_func = nx.is_tree
+            elif "pa" in self.metrics_list:
+                validity_func = is_pa_graph
             else:
                 validity_func = None
             (
@@ -1114,6 +1179,15 @@ class SBMSamplingMetrics(SpectreSamplingMetrics):
             datamodule=datamodule,
             compute_emd=False,
             metrics_list=["degree", "clustering", "orbit", "spectre", "wavelet", "sbm"],
+        )
+
+
+class PASamplingMetrics(SpectreSamplingMetrics):
+    def __init__(self, datamodule):
+        super().__init__(
+            datamodule=datamodule,
+            compute_emd=False,
+            metrics_list=["degree", "clustering", "orbit", "spectre", "wavelet", "pa"],
         )
 
 

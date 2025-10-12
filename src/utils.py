@@ -1,7 +1,53 @@
+import math
 import torch
 import numpy as np
 import networkx as nx
 from torch.utils.data import TensorDataset
+
+
+def build_time_schedule(N, T, eps, kind="log", power=2.0):
+    """Return a decreasing timestep sequence between ``T`` and ``eps``."""
+
+    if N <= 0:
+        raise ValueError("Number of discretization steps must be positive")
+
+    schedule = (kind or "log").lower()
+    T = float(T)
+    eps = float(eps)
+
+    if eps <= 0.0 or T <= 0.0:
+        raise ValueError("Both T and eps must be positive")
+
+    steps = torch.linspace(0.0, 1.0, N + 1, dtype=torch.float64)
+
+    if schedule == "linear":
+        ts = torch.linspace(T, eps, N + 1, dtype=torch.float64)
+    elif schedule == "power":
+        weights = steps.pow(power)
+        ts = T - (T - eps) * weights
+    elif schedule == "cosine":
+        weights = 0.5 * (1.0 - torch.cos(math.pi * steps))
+        ts = T - (T - eps) * weights
+    elif schedule == "log":
+        ts = torch.exp(torch.linspace(math.log(T), math.log(eps), N + 1, dtype=torch.float64))
+    elif schedule == "log_power":
+        weights = steps.pow(power)
+        log_T = math.log(T)
+        log_eps = math.log(eps)
+        ts = torch.exp(log_T + weights * (log_eps - log_T))
+    elif schedule == "double_log":
+        a = power if power is not None else 3.0
+        weights = 1.0 - torch.exp(-a * steps)
+        log_T = math.log(T)
+        log_eps = math.log(eps)
+        ts = torch.exp(log_eps + weights * (log_T - log_eps))
+    else:
+        raise ValueError(f"Unknown time schedule '{kind}'")
+
+    ts[0] = T
+    ts[-1] = eps
+    ts = ts.clamp(min=eps, max=T)
+    return ts.to(dtype=torch.float32)
 
 
 def node_flags(adjs, eps=1e-5):

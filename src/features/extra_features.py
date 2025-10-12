@@ -359,6 +359,7 @@ class KNodeCycles:
             - self.d * (self.d - 1)
             - (self.adj_matrix @ self.d.unsqueeze(-1)).sum(dim=-1)
         )
+        c4 = c4.clamp_min(0.0)  # numerical guard for fractional adjacencies
         return (c4 / 2).unsqueeze(-1).float(), (torch.sum(c4, dim=-1) / 8).unsqueeze(
             -1
         ).float()
@@ -372,6 +373,7 @@ class KNodeCycles:
             - (self.adj_matrix @ triangles.unsqueeze(-1)).sum(dim=-1)
             + triangles
         )
+        c5 = c5.clamp_min(0.0)  # numerical guard for fractional adjacencies
         return (c5 / 2).unsqueeze(-1).float(), (c5.sum(dim=-1) / 10).unsqueeze(
             -1
         ).float()
@@ -402,6 +404,7 @@ class KNodeCycles:
             - 12 * term9_t
             + 4 * term10_t
         )
+        c6_t = c6_t.clamp_min(0.0)  # numerical guard for fractional adjacencies
         return None, (c6_t / 12).unsqueeze(-1).float()
 
     def k_cycles(self, adj_matrix, verbose=False):

@@ -1,4 +1,5 @@
 import copy
+import os
 import torch
 
 from src.utils import adjs_to_graphs
@@ -14,6 +15,15 @@ class DistributionNodes:
 
 
 def compute_reference_metrics(datamodule, sampling_metrics):
+    dataset_name = getattr(datamodule.config.data, "data", "dataset")
+    metrics_dir = os.path.join(datamodule.config.data.dir, "ref_metrics")
+    os.makedirs(metrics_dir, exist_ok=True)
+    metrics_path = os.path.join(metrics_dir, f"ref_metrics_{dataset_name}.pt")
+
+    if os.path.exists(metrics_path):
+        print(f"Loading cached sampling metrics from {metrics_path}.")
+        return torch.load(metrics_path, map_location="cpu")
+
     print("Computing sampling metrics.")
     training_graphs = []
     print("Converting training dataset to format required by sampling metrics.")
@@ -44,7 +54,11 @@ def compute_reference_metrics(datamodule, sampling_metrics):
         **dummy_kwargs,
     )
 
-    return {
+    ref_metrics = {
         'val': val_ref_metrics,
         'test': test_ref_metrics
     }
+
+    torch.save(ref_metrics, metrics_path)
+    print(f"Saved sampling metrics to {metrics_path}.")
+    return ref_metrics

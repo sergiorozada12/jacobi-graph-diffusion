@@ -12,20 +12,20 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-4
-    snr: float = 0.02 # This goes good with 0.000001 scale_eps = 0
-    scale_eps: float = 0.0001 # 0.01 ratio 54
+    eps_time: float = 0.01
+    snr: float = 1.0
+    scale_eps: float = 0.1 # 0.01 ratio 54
     n_steps: int = 1
     num_nodes: int = 10
-    test_graphs: int = 10
-    use_corrector: bool = False
+    test_graphs: int = 64
+    use_corrector: bool = True
 
 @dataclass
 class DataConfig:
     dir: str = "data"
-    data: str = "sbm_baseline"
-    batch_size: int = 10
-    max_node_num: int = 200
+    data: str = "sbm_2comms_graphon"
+    batch_size: int = 64
+    max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
     val_split: float = 0.1
@@ -69,9 +69,9 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
-    num_epochs: int = 10_000
+    num_epochs: int = 30_000
     lambda_train: float = 5.0
-    use_ema: bool = False
+    use_ema: bool = True
     ema_decay: float = 0.999
 
 @dataclass
@@ -81,13 +81,13 @@ class SDEConfig:
     num_scales: int = 200
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 10
-    sample_target: bool = False # True with order 10 and mindiff 0.1 best convo so far
-    eps_sde: float = 1e-1
+    order: int = 100
+    sample_target: bool = False
+    eps_sde: float = 0.01
     max_force: float = 1000.0
     eps_score: float = 1e-10
-    eps_score_dist: float = 1e-5
-    time_schedule: str = "log"
+    eps_score_dist: float = 1e-3
+    time_schedule: str = "cosine"
     time_schedule_power: float = 2.0
 
 @dataclass

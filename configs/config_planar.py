@@ -36,6 +36,7 @@ class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
+    use_sampled_features: bool = True
     n_layers: int = 8
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
@@ -70,6 +71,8 @@ class TrainConfig:
     eps: float = 1e-5
     num_epochs: int = 70_000
     lambda_train: float = 5.0
+    use_ema: bool = False
+    ema_decay: float = 0.999
 
 @dataclass
 class SDEConfig:
@@ -84,6 +87,8 @@ class SDEConfig:
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-5
+    time_schedule: str = "log"
+    time_schedule_power: float = 2.0
 
 @dataclass
 class MainConfig:

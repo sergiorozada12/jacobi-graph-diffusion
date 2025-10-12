@@ -1,41 +1,15 @@
+import math
 import torch
 import numpy as np
 from tqdm import trange
-import networkx as nx
-import matplotlib.pyplot as plt
 
 from src.sde.score import JacobiScore
-from src.utils import mask_adjs, mask_x, gen_noise, assert_symmetric_and_masked
-
-
-def make_timesteps(T, eps, N, kind="log", power=2.0):
-    import math
-    if kind == "log":
-        # geometric spacing (many small steps near eps)
-        t = torch.exp(torch.linspace(math.log(T), math.log(eps), N+1))
-    elif kind == "log_power":
-        # t = T^(1 - u^p) * eps^(u^p)
-        w = u.pow(power)
-        t = (T ** (1.0 - w)) * (eps ** w)
-    elif kind == "double_log":
-        # more extreme than geometric: convex warp in log-space
-        # a controls aggressiveness; larger a => more packed near eps
-        a = power if power is not None else 3.0
-        # m(u) in [0,1], convex increasing
-        m = 1.0 - torch.exp(-a * u)
-        logT, logE = math.log(T), math.log(eps)
-        t = torch.exp(logE + m * (logT - logE))
-    elif kind == "cosine":
-        u = torch.linspace(0, 1, N+1)
-        w = 0.5 * (1 - torch.cos(math.pi * u))  # 0→0, 1→1
-        t = T - (T - eps) * w                   # denser near both ends (gentle)
-    elif kind == "power":
-        u = torch.linspace(0, 1, N+1)
-        w = u.pow(power)                        # power>1 densifies near eps
-        t = T - (T - eps) * w
-    else:
-        t = torch.linspace(T, eps, N+1)
-    return t  # length N+1, decreasing
+from src.utils import mask_adjs, mask_x, gen_noise, assert_symmetric_and_masked, build_time_schedule
+from src.visualization.plots import (
+    plot_graph_snapshots,
+    plot_heatmap_snapshots,
+    save_figure,
+)
 
 
 class EulerMaruyamaPredictor:
@@ -91,8 +65,6 @@ class LangevinCorrector:
         self.eps = eps
 
     def update(self, adj, flags, t):
-        target_snr = self.snr
-        seps = self.scale_eps
         device, dtype = adj.device, adj.dtype
         B = adj.shape[0]
 
@@ -144,6 +116,9 @@ class PCSolver:
             eps_score=1e-10,
             eps_score_dist=1e-5,
             use_corrector=False,
+            time_schedule="log",
+            time_schedule_power=2.0,
+            use_sampled_features=True,
         ):
         self.sde = sde
         self.shape_adj = shape_adj
@@ -152,6 +127,8 @@ class PCSolver:
         self.device = device
         self.n_steps = n_steps
         self.use_corrector = use_corrector
+        self.time_schedule = time_schedule
+        self.time_schedule_power = time_schedule_power
         
         jacobi_score = JacobiScore(
             model=model,
@@ -161,7 +138,8 @@ class PCSolver:
             order=order,
             sample_target=sample_target,
             eps_score=eps_score,
-            eps_score_dist=eps_score_dist
+            eps_score_dist=eps_score_dist,
+            use_sampled_features=use_sampled_features,
         )
 
         self.predictor = EulerMaruyamaPredictor(sde, jacobi_score)
@@ -174,7 +152,13 @@ class PCSolver:
 
             history = []
             N = self.sde.N
-            ts = make_timesteps(self.sde.T, self.eps, N, kind="log").to(self.device, dtype=adj.dtype)
+            ts = build_time_schedule(
+                N=N,
+                T=self.sde.T,
+                eps=self.eps,
+                kind=self.time_schedule,
+                power=self.time_schedule_power,
+            ).to(self.device, dtype=adj.dtype)
             for i in trange(0, N, desc="[Sampling]", position=1, leave=False):
                 t, dt  = ts[i], (ts[i+1] - ts[i]).item()
                 vec_t  = torch.full((self.shape_adj[0],), t, device=self.device, dtype=adj.dtype)
@@ -185,10 +169,6 @@ class PCSolver:
                 
                 history.append(adj[0].detach().cpu())
             
-        import matplotlib.pyplot as plt
-        import networkx as nx
-        import numpy as np
-
         flags0 = flags[0].cpu().bool()
         active_idx = flags0.nonzero(as_tuple=True)[0]
 
@@ -196,30 +176,23 @@ class PCSolver:
         idxs = np.linspace(0, len(history) - 1, 100, dtype=int)
         snapshots = [history[i].numpy()[np.ix_(active_idx, active_idx)] for i in idxs]
 
-        fig, axes = plt.subplots(10, 10, figsize=(18, 18))
-        axes = axes.reshape(-1)
+        graph_fig = plot_graph_snapshots(
+            snapshots,
+            grid_shape=(10, 10),
+            threshold=0.5,
+            layout_seed=42,
+            node_size=20,
+            edge_width=0.8,
+        )
+        save_figure(graph_fig, "history_graphs.png", dpi=150)
 
-        # fixed layout from last snapshot
-        G_last = nx.from_numpy_array((snapshots[-1] > 0.5).astype(int))
-        pos = nx.spring_layout(G_last, seed=42)
-
-        for ax, A in zip(axes, snapshots):
-            G = nx.from_numpy_array((A > 0.5).astype(int))
-            ax.axis("off")
-            nx.draw_networkx(G, pos=pos, with_labels=False, node_size=20, width=0.8, ax=ax)
-
-        plt.tight_layout()
-        plt.savefig("history_graphs.png", dpi=150)
-        plt.close(fig)
-
-        # also plot heatmaps
-        fig, axes = plt.subplots(10, 10, figsize=(18, 18))
-        axes = axes.reshape(-1)
-        for ax, A in zip(axes, snapshots):
-            ax.imshow(A, vmin=0, vmax=1, cmap="Greys")
-            ax.axis("off")
-        plt.tight_layout()
-        plt.savefig("history_heatmaps.png", dpi=150)
-        plt.close(fig)
+        heatmap_fig = plot_heatmap_snapshots(
+            snapshots,
+            grid_shape=(10, 10),
+            cmap="Greys",
+            vmin=0.0,
+            vmax=1.0,
+        )
+        save_figure(heatmap_fig, "history_heatmaps.png", dpi=150)
 
         return ((adj_mean if self.denoise else adj), N * (self.n_steps + 1))

@@ -1,7 +1,7 @@
 from omegaconf import OmegaConf
+from pathlib import Path
 import torch
 import pytorch_lightning as pl
-import matplotlib.pyplot as plt
 
 from src.models.transformer_model import GraphTransformer
 from src.dataset.synth import SynthGraphDatasetModule
@@ -11,6 +11,7 @@ from src.sample.sampler import Sampler
 from configs.config_tree import MainConfig
 # from configs.config_planar import MainConfig
 from src.metrics.val import TreeSamplingMetrics, PlanarSamplingMetrics
+from src.visualization.plots import save_figure
 
 
 def main():
@@ -40,9 +41,8 @@ def main():
     sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
     samples, fig = sampler.sample()
 
-    save_path = f"samples/test.png"
-    plt.savefig(save_path, dpi=300)
-    plt.close(fig)
+    save_path = Path("samples/test.png")
+    save_figure(fig, save_path, dpi=300)
 
     sampling_metrics.reset()
     metrics = sampling_metrics.forward(

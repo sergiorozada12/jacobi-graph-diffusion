@@ -1,16 +1,18 @@
-import matplotlib.pyplot as plt
+import copy
+import os
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 import wandb
-import math
+from contextlib import contextmanager
 
 from src.metrics.train import TrainLoss
 from src.models.transformer_model import GraphTransformer
 from src.sde.sde import JacobiSDE
 from src.sample.sampler import Sampler
 from src.features.extra_features import ExtraFeatures
-from src.utils import node_flags, gen_noise
+from src.utils import node_flags, gen_noise, build_time_schedule
+from src.visualization.plots import close_figure, plot_graph_comparison
 
 
 class DiffusionGraphModule(pl.LightningModule):
@@ -42,6 +44,24 @@ class DiffusionGraphModule(pl.LightningModule):
 
         self.dataset_name = cfg.data.data
         self.loss_eps = cfg.train.eps
+        self._ran_sampling_metrics = False
+        self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
+        self.use_ema = getattr(cfg.train, "use_ema", False)
+        self.ema_decay = getattr(cfg.train, "ema_decay", 0.999)
+        if self.use_ema:
+            self.ema_model = copy.deepcopy(self.model)
+            for p in self.ema_model.parameters():
+                p.requires_grad_(False)
+            self.ema_model.eval()
+
+        # Pre-compute time discretisation used by sampler to mirror during training.
+        self.time_schedule_steps = build_time_schedule(
+            N=cfg.sde.num_scales,
+            T=self.sde.T,
+            eps=cfg.sampler.eps_time,
+            kind=getattr(cfg.sde, "time_schedule", "log"),
+            power=getattr(cfg.sde, "time_schedule_power", 2.0),
+        )
 
     def _build_sde(self, cfg_sde):
         return JacobiSDE(
@@ -54,6 +74,50 @@ class DiffusionGraphModule(pl.LightningModule):
             max_force=cfg_sde.max_force,
         )
 
+    def _get_eval_model(self):
+        if self.use_ema:
+            ema_device = next(self.ema_model.parameters()).device
+            if ema_device != self.device:
+                self.ema_model.to(self.device)
+            return self.ema_model
+        return self.model
+
+    @torch.no_grad()
+    def _update_ema(self):
+        if not self.use_ema:
+            return
+
+        ema_params = dict(self.ema_model.named_parameters())
+        model_params = dict(self.model.named_parameters())
+        for name, param in model_params.items():
+            ema_param = ema_params[name]
+            ema_param.data.mul_(self.ema_decay).add_(param.data, alpha=1.0 - self.ema_decay)
+
+        ema_buffers = dict(self.ema_model.named_buffers())
+        model_buffers = dict(self.model.named_buffers())
+        for name, buffer in model_buffers.items():
+            ema_buffers[name].data.copy_(buffer.data)
+
+    @contextmanager
+    def _using_sampler_model(self, model):
+        if self.sampler.model is model:
+            yield
+            return
+
+        original_model = self.sampler.model
+        original_mode = getattr(original_model, "training", False)
+        target_mode = getattr(model, "training", False)
+        model.eval()
+        self.sampler.set_model(model)
+        try:
+            yield
+        finally:
+            self.sampler.set_model(original_model)
+            if original_model is not None:
+                original_model.train(original_mode)
+            if model is not None:
+                model.train(target_mode)
+
     def configure_optimizers(self):    
         opt = torch.optim.AdamW(
             self.model.parameters(),
@@ -63,6 +127,27 @@ class DiffusionGraphModule(pl.LightningModule):
         )
         return opt
 
+    def optimizer_step(self, *args, **kwargs):
+        super().optimizer_step(*args, **kwargs)
+        self._update_ema()
+
+    def on_train_start(self):
+        if self.use_ema:
+            self.ema_model.to(self.device)
+            self.ema_model.load_state_dict(self.model.state_dict())
+
+    def _sample_time(self, batch_size):
+        schedule = self.time_schedule_steps.to(self.device)
+        if schedule.numel() < 2:
+            return torch.full((batch_size,), schedule[-1], device=self.device)
+
+        idx = torch.randint(0, schedule.numel() - 1, (batch_size,), device=self.device)
+        upper = schedule[idx]
+        lower = schedule[idx + 1]
+        u = torch.rand(batch_size, device=self.device)
+        t = lower + (upper - lower) * u
+        return t.clamp(min=self.loss_eps)
+
     def training_step(self, batch, batch_idx):
         # Data
         X, A = batch
@@ -70,9 +155,7 @@ class DiffusionGraphModule(pl.LightningModule):
         flags = node_flags(A)
 
         # Noise
-        #t = torch.rand(B, device=self.device) * (self.sde.T - self.loss_eps) + self.loss_eps
-        u = torch.rand(B, device=self.device)
-        t = torch.exp((1.0 - u) * math.log(self.sde.T) + u * math.log(self.loss_eps))
+        t = self._sample_time(B)
         A_t, A_t_sample = self._perturb_data(A, flags, t)
 
         E = torch.cat([(1 - A).unsqueeze(-1), A.unsqueeze(-1)], dim=-1).float()
@@ -80,8 +163,8 @@ class DiffusionGraphModule(pl.LightningModule):
         E_t_sample = torch.cat([(1 - A_t_sample).unsqueeze(-1), A_t_sample.unsqueeze(-1)], dim=-1).float()
 
         # Features
-        # extra_pred = self.feature_extractor(E_t, flags)
-        extra_pred = self.feature_extractor(E_t_sample, flags)
+        features_input = E_t_sample if self.use_sampled_features else E_t
+        extra_pred = self.feature_extractor(features_input, flags)
         y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
 
         # Prediction
@@ -100,36 +183,37 @@ class DiffusionGraphModule(pl.LightningModule):
         B, _, _ = X.shape
         flags = node_flags(A)
 
-        #t = torch.rand(B, device=self.device) * (self.sde.T - self.loss_eps) + self.loss_eps
-        u = torch.rand(B, device=self.device)
-        t = torch.exp((1.0 - u) * math.log(self.sde.T) + u * math.log(self.loss_eps))
+        t = self._sample_time(B)
         A_t, A_t_sample = self._perturb_data(A, flags, t)
         E_t = torch.cat([(1 - A_t).unsqueeze(-1), A_t.unsqueeze(-1)], dim=-1).float()
         E_t_sample = torch.cat([(1 - A_t_sample).unsqueeze(-1), A_t_sample.unsqueeze(-1)], dim=-1).float()
 
         with torch.no_grad():
-            #extra_pred = self.feature_extractor(E_t, flags)
-            extra_pred = self.feature_extractor(E_t_sample, flags)
+            features_input = E_t_sample if self.use_sampled_features else E_t
+            extra_pred = self.feature_extractor(features_input, flags)
             y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
-            pred = self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+            model = self._get_eval_model()
+            pred = model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
             #pred = self.model(extra_pred.X.float(), E_t.float(), y, flags)
             #E_inp = torch.cat([extra_pred.E.float(), E_t.float()], dim=-1)
             #pred = self.model(extra_pred.X.float(), E_inp, y, flags)
             A_pred = F.softmax(pred.E, dim=-1)[..., 1:].sum(dim=-1).float()
-        
-        fig = self._plot_graph_comparison(
+
+        fig = plot_graph_comparison(
            adj_true=A[0],
            adj_recon=A_pred[0],
            adj_noisy=A_t[0],
            t_val=t[0].item(),
         )
         wandb.log({"val/denoiser": wandb.Image(fig)})
-        plt.close(fig)
+        close_figure(fig)
 
     def _val_sampler(self):
-        samples, fig = self.sampler.sample()
+        eval_model = self._get_eval_model()
+        with self._using_sampler_model(eval_model):
+            samples, fig = self.sampler.sample()
         wandb.log({"val/sampler": wandb.Image(fig)})
-        plt.close(fig)
+        close_figure(fig)
 
         self.sampling_metrics.reset()
         _ = self.sampling_metrics.forward(
@@ -142,11 +226,20 @@ class DiffusionGraphModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, A = batch
         self._val_denoiser(X, A)
-        self._val_sampler()
+        if not self._ran_sampling_metrics:
+            self._val_sampler()
+            self._ran_sampling_metrics = True
         return
 
+    def on_validation_epoch_start(self):
+        self._ran_sampling_metrics = False
+
     def on_fit_end(self):
-        torch.save(self.model.state_dict(), f"checkpoints/{self.cfg.data.data}/weights.pth")
+        ckpt_dir = f"checkpoints/{self.cfg.data.data}"
+        os.makedirs(ckpt_dir, exist_ok=True)
+        torch.save(self.model.state_dict(), f"{ckpt_dir}/weights.pth")
+        if self.use_ema:
+            torch.save(self.ema_model.state_dict(), f"{ckpt_dir}/weights_ema.pth")
 
     def _perturb_data(self, adj0, flags, T):
         B = adj0.shape[0]
@@ -183,33 +276,3 @@ class DiffusionGraphModule(pl.LightningModule):
         adj_sample = adj_triu_sample + adj_triu_sample.transpose(-1, -2)
 
         return adj, adj_sample
-
-    def _plot_graph_comparison(self, adj_true, adj_recon, adj_noisy, t_val=None):
-        adj_true_np = adj_true.detach().cpu().numpy()
-        adj_recon_np = adj_recon.detach().cpu().numpy()
-        adj_noisy_np = adj_noisy.detach().cpu().numpy()
-
-        adj_min = min(adj_true_np.min(), adj_recon_np.min(), adj_noisy_np.min())
-        adj_max = max(adj_true_np.max(), adj_recon_np.max(), adj_noisy_np.max())
-
-        fig, axs = plt.subplots(1, 3, figsize=(16, 4), constrained_layout=True)
-        title = f"Sampled t = {t_val:.2f}" if t_val is not None else "Graph Comparison"
-        fig.suptitle(title, fontsize=14)
-
-        im0 = axs[0].imshow(adj_true_np, cmap='viridis', vmin=adj_min, vmax=adj_max)
-        axs[0].set_title("True Adjacency")
-        axs[0].axis("off")
-
-        im1 = axs[1].imshow(adj_recon_np, cmap='viridis', vmin=adj_min, vmax=adj_max)
-        axs[1].set_title("Reconstructed Adjacency")
-        axs[1].axis("off")
-
-        im2 = axs[2].imshow(adj_noisy_np, cmap='viridis', vmin=adj_min, vmax=adj_max)
-        axs[2].set_title("Noisy Adjacency")
-        axs[2].axis("off")
-
-        fig.colorbar(im0, ax=axs[0], shrink=0.9, location='right', pad=0.01).set_label("Adjacency Value")
-        fig.colorbar(im1, ax=axs[1], shrink=0.9, location='right', pad=0.01).set_label("Adjacency Value")
-        fig.colorbar(im2, ax=axs[2], shrink=0.9, location='right', pad=0.01).set_label("Adjacency Value")
-
-        return fig

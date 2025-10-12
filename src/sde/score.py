@@ -16,7 +16,8 @@ class JacobiScore:
             order=10, 
             eps_score=1e-10, 
             eps_score_dist=1e-5, 
-            sample_target=True
+            sample_target=True,
+            use_sampled_features=True
         ):
         self.order = order
         self.eps = eps_score
@@ -29,6 +30,7 @@ class JacobiScore:
         )
         self.sample_target = sample_target
         self.decay_cutoff = 1e-12
+        self.use_sampled_features = use_sampled_features
         self.model.eval()
 
     def legendre_poly_and_derivative(self, x):
@@ -164,15 +166,19 @@ class JacobiScore:
         A_t_dist = A_t_dist * flags_mask
 
         A_t_triu = torch.triu(A_t_dist, diagonal=1)
-        A_t_triu_sample = torch.bernoulli(A_t_triu)
+        if self.use_sampled_features:
+            A_t_triu_sample = torch.bernoulli(A_t_triu)
+            A_t_sample = A_t_triu_sample + A_t_triu_sample.transpose(-1, -2)
+        else:
+            A_t_sample = A_t_triu + A_t_triu.transpose(-1, -2)
 
         A_t = A_t_triu + A_t_triu.transpose(-1, -2)
-        A_t_sample = A_t_triu_sample + A_t_triu_sample.transpose(-1, -2)
 
         assert_symmetric_and_masked(A_t, flags)
         E_t = torch.cat([(1 - A_t).unsqueeze(-1), A_t.unsqueeze(-1)], dim=-1).float()
         E_t_sample = torch.cat([(1 - A_t_sample).unsqueeze(-1), A_t_sample.unsqueeze(-1)], dim=-1).float()
-        extra_pred = self.feature_extractor(E_t_sample, flags)
+        feature_input = E_t_sample if self.use_sampled_features else E_t
+        extra_pred = self.feature_extractor(feature_input, flags)
         y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
         # assert_symmetric_and_masked_E(extra_pred.E, flags) # This is not symmetric
 

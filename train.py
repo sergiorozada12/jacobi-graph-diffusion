@@ -6,8 +6,10 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
-from configs.config_tree import MainConfig
+#from configs.config_tree import MainConfig
 #from configs.config_sbm import MainConfig
+from configs.config_pa import MainConfig
+#from configs.config_sbm_2comms import MainConfig
 #from configs.config_planar import MainConfig
 
 
@@ -15,7 +17,7 @@ from src.train.trainer import DiffusionGraphModule
 from src.dataset.synth import SynthGraphDatasetModule
 from src.dataset.spectre import SpectreDatasetModule
 from src.dataset.utils import DistributionNodes, compute_reference_metrics
-from src.metrics.val import TreeSamplingMetrics, SBMSamplingMetrics, PlanarSamplingMetrics
+from src.metrics.val import TreeSamplingMetrics, SBMSamplingMetrics, PlanarSamplingMetrics, PASamplingMetrics
 
 
 def main():
@@ -27,9 +29,10 @@ def main():
 
     node_dist = DistributionNodes(prob=datamodule.node_counts())
 
-    sampling_metrics = TreeSamplingMetrics(datamodule)
+    # sampling_metrics = TreeSamplingMetrics(datamodule)
     # sampling_metrics = SBMSamplingMetrics(datamodule)
     # sampling_metrics = PlanarSamplingMetrics(datamodule)
+    sampling_metrics = PASamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
     model = DiffusionGraphModule(
@@ -60,7 +63,7 @@ def main():
     wandb_run_id = None
     logger = WandbLogger(
         project="jacobi-graph-diffusion",
-        name="tree-spectre",
+        name="pa-graphon",
         id=wandb_run_id,
         resume="must" if wandb_run_id else None,
     )

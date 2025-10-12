@@ -1,7 +1,7 @@
 from omegaconf import OmegaConf
+from pathlib import Path
 import torch
 import pytorch_lightning as pl
-import matplotlib.pyplot as plt
 
 from src.models.transformer_model import GraphTransformer
 from src.dataset.synth import SynthGraphDatasetModule
@@ -10,8 +10,11 @@ from src.dataset.utils import DistributionNodes, compute_reference_metrics
 from src.sample.sampler import Sampler
 #from configs.config_tree import MainConfig
 #from configs.config_planar import MainConfig
-from configs.config_sbm import MainConfig
-from src.metrics.val import TreeSamplingMetrics, PlanarSamplingMetrics, SBMSamplingMetrics
+#from configs.config_sbm import MainConfig
+#from configs.config_sbm_2comms import MainConfig
+from configs.config_pa import MainConfig
+from src.metrics.val import TreeSamplingMetrics, PlanarSamplingMetrics, SBMSamplingMetrics, PASamplingMetrics
+from src.visualization.plots import save_figure
 
 
 def main():
@@ -25,7 +28,8 @@ def main():
 
     # sampling_metrics = PlanarSamplingMetrics(datamodule)
     # sampling_metrics = TreeSamplingMetrics(datamodule)
-    sampling_metrics = SBMSamplingMetrics(datamodule)
+    # sampling_metrics = SBMSamplingMetrics(datamodule)
+    sampling_metrics = PASamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
     model = GraphTransformer(
@@ -37,14 +41,20 @@ def main():
         act_fn_in=torch.nn.ReLU(),
         act_fn_out=torch.nn.ReLU(),
     )
-    model.load_state_dict(torch.load(f"checkpoints/{cfg.data.data}/weights.pth"))
+    ckpt_dir = Path("checkpoints") / cfg.data.data
+    ema_path = ckpt_dir / "weights_ema.pth"
+    weights_path = ckpt_dir / "weights.pth"
+    if cfg.train.use_ema and ema_path.exists():
+        state_dict = torch.load(ema_path, map_location="cpu")
+    else:
+        state_dict = torch.load(weights_path, map_location="cpu")
+    model.load_state_dict(state_dict)
 
     sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
     samples, fig = sampler.sample()
 
-    save_path = f"samples/test.png"
-    plt.savefig(save_path, dpi=300)
-    plt.close(fig)
+    save_path = Path("samples/test.png")
+    save_figure(fig, save_path, dpi=300)
 
     sampling_metrics.reset()
     metrics = sampling_metrics.forward(
