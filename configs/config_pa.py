@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GeneralConfig:
-    seed: int = 42
+    seed: int = 103
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
@@ -14,20 +14,20 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 0.0035
+    eps_time: float = 0.001
     snr: float = 0.7
     scale_eps: float = 0.225
     n_steps: int = 1
     num_nodes: int = 60
-    test_graphs: int = 64
-    use_corrector: bool = True
+    test_graphs: int = 100
+    use_corrector: bool = False
 
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "pa_graphon"
-    batch_size: int = 64
+    batch_size: int = 100
     max_node_num: int = 60
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -87,9 +87,9 @@ class SDEConfig:
     num_scales: int = 200
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 95
-    sample_target: bool = False
-    eps_sde: float = 0.00025
+    order: int = 100
+    sample_target: bool = True
+    eps_sde: float = 0.0001
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-5

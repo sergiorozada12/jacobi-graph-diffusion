@@ -25,6 +25,7 @@ from src.metrics.val import (
     SpectreSamplingMetrics,
     TreeSamplingMetrics,
 )
+from src.parameter_search.persistence import HyperparamStore
 from src.models.transformer_model import GraphTransformer
 from src.sample.sampler import Sampler
 
@@ -363,70 +364,134 @@ def run_tuning(base_cfg, settings: TuningSettings):
     if settings.verbose:
         print(f"Running {len(all_trials)} trial(s) with objective '{settings.objective}'.")
 
+    minimize_objective = settings.objective == "average_ratio"
+    objective_mode = "min" if minimize_objective else "max"
+    store = HyperparamStore(cfg.data.data, settings.objective, objective_mode)
+    store.start_run()
+
     best_result = None
     best_metrics = None
-    best_objective_value = math.inf if settings.objective == "average_ratio" else -math.inf
-    trial_results = []
+    best_objective_value = math.inf if minimize_objective else -math.inf
+    history_best = store.best_history()
+    if history_best:
+        best_result = history_best.get("params")
+        best_metrics = history_best.get("metrics")
+        best_objective_value = history_best.get("objective", best_objective_value)
 
-    for idx, params in enumerate(all_trials, start=1):
-        if settings.verbose:
-            print(f"\n--- Trial {idx}/{len(all_trials)} ---")
-            print(f"Parameters: {params}")
+    best_run_record = None
+    best_run_value = math.inf if minimize_objective else -math.inf
+    trial_results: List[Dict[str, Any]] = []
 
-        try:
-            with maybe_silence(settings.suppress_external_output and not settings.verbose):
-                trial_metrics = evaluate_trial(
-                    cfg,
-                    params,
-                    model,
-                    datamodule,
-                    node_dist,
-                    metrics_module,
-                    ref_metrics,
-                    trial_seed=cfg.general.seed + idx,
-                )
-            obj_value, objective_key = compute_objective(
-                trial_metrics,
-                settings.objective,
-                settings.metric_key,
-            )
-        except Exception as exc:
-            print(f"Trial {idx} failed: {exc}")
-            trial_results.append(
-                {"params": params, "status": "failed", "error": str(exc)}
-            )
-            continue
-
-        if settings.verbose:
-            print(f"Objective ({objective_key}) = {obj_value}")
-        trial_results.append(
-            {"params": params, "status": "ok", "objective": obj_value, "metrics": trial_metrics}
-        )
-
-        improved = False
-        if settings.objective == "average_ratio":
-            if obj_value < best_objective_value:
-                improved = True
-        else:
-            if obj_value > best_objective_value:
-                improved = True
-
-        if improved:
-            best_objective_value = obj_value
-            best_result = params
-            best_metrics = trial_metrics
+    try:
+        for idx, params in enumerate(all_trials, start=1):
             if settings.verbose:
-                print("New best configuration found.")
+                print(f"\n--- Trial {idx}/{len(all_trials)} ---")
+                print(f"Parameters: {params}")
 
-        if not settings.verbose:
-            best_display = best_objective_value if best_result is not None else obj_value
-            print(
-                f"Trial {idx}/{len(all_trials)} | params={params} | "
-                f"{objective_key}={obj_value:g} | best={best_display:g}"
+            if store.has_successful_trial(params):
+                existing = store.get_trial(params)
+                if settings.verbose:
+                    recorded_value = existing.get("objective") if existing else None
+                    print(
+                        "Skipping trial (already recorded with status 'ok'). "
+                        f"Stored objective: {recorded_value}"
+                    )
+                trial_results.append(
+                    {
+                        "params": params,
+                        "status": "skipped",
+                        "objective": existing.get("objective") if existing else None,
+                        "metrics": existing.get("metrics") if existing else None,
+                    }
+                )
+                continue
+
+            trial_seed = cfg.general.seed + idx
+            try:
+                with maybe_silence(settings.suppress_external_output and not settings.verbose):
+                    trial_metrics = evaluate_trial(
+                        cfg,
+                        params,
+                        model,
+                        datamodule,
+                        node_dist,
+                        metrics_module,
+                        ref_metrics,
+                        trial_seed=trial_seed,
+                    )
+                obj_value, objective_key = compute_objective(
+                    trial_metrics,
+                    settings.objective,
+                    settings.metric_key,
+                )
+            except Exception as exc:
+                print(f"Trial {idx} failed: {exc}")
+                record = store.record_failure(
+                    params,
+                    error=str(exc),
+                    seed=trial_seed,
+                    trial_index=idx,
+                )
+                trial_results.append(
+                    {"params": params, "status": "failed", "error": record["error"]}
+                )
+                continue
+
+            if settings.verbose:
+                print(f"Objective ({objective_key}) = {obj_value}")
+
+            record = store.record_success(
+                params,
+                objective_value=obj_value,
+                metrics=trial_metrics,
+                objective_key=objective_key,
+                seed=trial_seed,
+                trial_index=idx,
             )
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            trial_results.append(
+                {"params": params, "status": "ok", "objective": obj_value, "metrics": trial_metrics}
+            )
+
+            improved = False
+            if minimize_objective:
+                if obj_value < best_objective_value:
+                    improved = True
+            else:
+                if obj_value > best_objective_value:
+                    improved = True
+
+            if improved:
+                best_objective_value = obj_value
+                best_result = params
+                best_metrics = trial_metrics
+                if settings.verbose:
+                    print("New best configuration found.")
+
+            better_run = False
+            if minimize_objective:
+                if obj_value < best_run_value:
+                    better_run = True
+            else:
+                if obj_value > best_run_value:
+                    better_run = True
+
+            if better_run:
+                best_run_value = obj_value
+                best_run_record = record
+
+            if not settings.verbose:
+                best_display = best_objective_value if best_result is not None else obj_value
+                print(
+                    f"Trial {idx}/{len(all_trials)} | params={params} | "
+                    f"{objective_key}={obj_value:g} | best={best_display:g}"
+                )
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    finally:
+        store.finalize_run(best_run_record)
 
     if best_result is None:
         raise RuntimeError("All trials failed. Check logs above for details.")
@@ -436,6 +501,9 @@ def run_tuning(base_cfg, settings: TuningSettings):
     print("\nAssociated metrics:")
     print(json.dumps(best_metrics, indent=2))
 
+    best_history_snapshot = store.best_history()
+    best_last_run_snapshot = store.best_last_run()
+
     if settings.results_path:
         results_path = Path(settings.results_path)
         results_path.parent.mkdir(parents=True, exist_ok=True)
@@ -444,6 +512,8 @@ def run_tuning(base_cfg, settings: TuningSettings):
                 {
                     "objective": settings.objective,
                     "trials": trial_results,
+                    "best_history": best_history_snapshot,
+                    "best_run": best_last_run_snapshot,
                     "best": {
                         "params": best_result,
                         "objective": best_objective_value,

@@ -19,7 +19,15 @@ from src.visualization.plots import save_figure
 
 def main():
     cfg = OmegaConf.structured(MainConfig())
-    _ = pl.seed_everything(cfg.general.seed)
+
+    if torch.cuda.is_available():
+        cfg.general.device = "cuda:0"
+    else:
+        if str(cfg.general.device).startswith("cuda"):
+            print("CUDA not available, falling back to CPU.")
+        cfg.general.device = "cpu"
+
+    _ = pl.seed_everything(cfg.general.seed, workers=True)
 
     datamodule = SpectreDatasetModule(cfg)
     datamodule.setup()
@@ -45,11 +53,20 @@ def main():
     ema_path = ckpt_dir / "weights_ema.pth"
     weights_path = ckpt_dir / "weights.pth"
     if cfg.train.use_ema and ema_path.exists():
-        state_dict = torch.load(ema_path, map_location="cpu")
+        weight_path = ema_path
+    elif weights_path.exists():
+        weight_path = weights_path
     else:
-        state_dict = torch.load(weights_path, map_location="cpu")
+        raise FileNotFoundError(
+            f"Could not find checkpoint for '{cfg.data.data}'. "
+            f"Looked for {ema_path} and {weights_path}."
+        )
+    state_dict = torch.load(weight_path, map_location="cpu")
     model.load_state_dict(state_dict)
+    model = model.to(cfg.general.device)
+    model.eval()
 
+    pl.seed_everything(cfg.general.seed, workers=True)
     sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
     samples, fig = sampler.sample()
 

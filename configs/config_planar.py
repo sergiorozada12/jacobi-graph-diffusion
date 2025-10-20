@@ -17,14 +17,14 @@ class SamplerConfig:
     scale_eps: float = 0.0001 # 0.01 ratio 54
     n_steps: int = 2
     num_nodes: int = 10
-    test_graphs: int = 100
+    test_graphs: int = 32
     use_corrector: bool = True
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "planar_baseline"
-    batch_size: int = 100
+    batch_size: int = 32
     max_node_num: int = 70
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -69,7 +69,7 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
-    num_epochs: int = 70_000
+    num_epochs: int = 20_000
     lambda_train: float = 5.0
     use_ema: bool = False
     ema_decay: float = 0.999
@@ -78,10 +78,10 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1_000
+    num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 30 # 30 works good for predictor
+    order: int = 100 # 30 works good for predictor
     sample_target: bool = False
     eps_sde: float = 1e-2 #3.1622776601e-3 # 3.16 works worse lol
     max_force: float = 1000.0

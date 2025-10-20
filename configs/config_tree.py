@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GeneralConfig:
-    seed: int = 42
+    seed: int = 185
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
@@ -12,19 +12,19 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-5
-    snr: float = 1.0
-    scale_eps: float = 0.1
-    n_steps: int = 1
+    eps_time: float = 7.5e-06
+    snr: float = 0.0075
+    scale_eps: float = 0.9
+    n_steps: int = 2
     num_nodes: int = 20
-    test_graphs: int = 32
+    test_graphs: int = 100
     use_corrector: bool = True
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "tree_baseline"
-    batch_size: int = 32 # 32
+    batch_size: int = 100 # 32
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -36,7 +36,7 @@ class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
-    use_sampled_features: bool = False
+    use_sampled_features: bool = True
     n_layers: int = 10
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
@@ -80,14 +80,14 @@ class SDEConfig:
     beta: float = 1.0
     num_scales: int = 200
     s_min: float = 0.5
-    s_max: float = 3.0
-    order: int = 100
+    s_max: float = 0.5
+    order: int = 110
     sample_target: bool = True # True in general
-    eps_sde: float = 1e-2
+    eps_sde: float = 0.2
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-5
-    time_schedule: str = "cosine"
+    time_schedule: str = "log"
     time_schedule_power: float = 2.0
 
 @dataclass

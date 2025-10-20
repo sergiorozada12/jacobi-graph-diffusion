@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GeneralConfig:
-    seed: int = 42 # 58 or 42 or 5 works good
+    seed: int = 59
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
@@ -13,18 +13,18 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = True
     eps_time: float = 0.01
-    snr: float = 1.0
-    scale_eps: float = 0.1 # 0.01 ratio 54
+    snr: float = 0.01
+    scale_eps: float = 1.0
     n_steps: int = 1
     num_nodes: int = 10
-    test_graphs: int = 64
+    test_graphs: int = 100
     use_corrector: bool = True
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "sbm_2comms_graphon"
-    batch_size: int = 64
+    batch_size: int = 100
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -37,7 +37,7 @@ class ModelConfig:
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
     use_sampled_features: bool = True
-    n_layers: int = 5
+    n_layers: int = 10
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
         "E": 20,    # rrwp_steps
@@ -69,7 +69,7 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-5
-    num_epochs: int = 30_000
+    num_epochs: int = 40_000
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
@@ -87,7 +87,7 @@ class SDEConfig:
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-3
-    time_schedule: str = "cosine"
+    time_schedule: str = "log"
     time_schedule_power: float = 2.0
 
 @dataclass

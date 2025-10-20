@@ -8,9 +8,9 @@ from pytorch_lightning.loggers import WandbLogger
 
 #from configs.config_tree import MainConfig
 #from configs.config_sbm import MainConfig
-from configs.config_pa import MainConfig
+#from configs.config_pa import MainConfig
 #from configs.config_sbm_2comms import MainConfig
-#from configs.config_planar import MainConfig
+from configs.config_planar import MainConfig
 
 
 from src.train.trainer import DiffusionGraphModule
@@ -31,8 +31,8 @@ def main():
 
     # sampling_metrics = TreeSamplingMetrics(datamodule)
     # sampling_metrics = SBMSamplingMetrics(datamodule)
-    # sampling_metrics = PlanarSamplingMetrics(datamodule)
-    sampling_metrics = PASamplingMetrics(datamodule)
+    sampling_metrics = PlanarSamplingMetrics(datamodule)
+    # sampling_metrics = PASamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
     model = DiffusionGraphModule(
@@ -63,7 +63,7 @@ def main():
     wandb_run_id = None
     logger = WandbLogger(
         project="jacobi-graph-diffusion",
-        name="pa-graphon",
+        name="planar-spectre",
         id=wandb_run_id,
         resume="must" if wandb_run_id else None,
     )

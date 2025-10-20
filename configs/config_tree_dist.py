@@ -12,13 +12,13 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-5
+    eps_time: float = 0.001
     snr: float = 1.0
     scale_eps: float = 0.1
     n_steps: int = 1
     num_nodes: int = 20
     test_graphs: int = 32
-    use_corrector: bool = True
+    use_corrector: bool = False
 
 @dataclass
 class DataConfig:
@@ -36,7 +36,7 @@ class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
-    use_sampled_features: bool = True
+    use_sampled_features: bool = False
     n_layers: int = 10
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
@@ -80,7 +80,7 @@ class SDEConfig:
     beta: float = 1.0
     num_scales: int = 200
     s_min: float = 0.5
-    s_max: float = 0.5
+    s_max: float = 3.0
     order: int = 100
     sample_target: bool = True # True in general
     eps_sde: float = 1e-2
