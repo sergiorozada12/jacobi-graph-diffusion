@@ -1,3 +1,4 @@
+import argparse
 from omegaconf import OmegaConf
 from pathlib import Path
 import torch
@@ -17,8 +18,67 @@ from src.metrics.val import TreeSamplingMetrics, PlanarSamplingMetrics, SBMSampl
 from src.visualization.plots import save_figure
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate PA graphs with optional custom node-count distribution.")
+    parser.add_argument(
+        "--min-nodes",
+        type=int,
+        default=None,
+        help="Minimum number of nodes to sample. Requires --max-nodes. Defaults to dataset distribution.",
+    )
+    parser.add_argument(
+        "--max-nodes",
+        type=int,
+        default=None,
+        help="Maximum number of nodes to sample. Requires --min-nodes. Defaults to dataset distribution.",
+    )
+    return parser.parse_args()
+
+
+def build_node_distribution(cfg, datamodule, min_nodes=None, max_nodes=None):
+    max_nodes_possible = cfg.data.max_node_num + 1
+    base_prob = datamodule.node_counts(max_nodes_possible)
+    if base_prob.numel() < max_nodes_possible:
+        padding = torch.zeros(max_nodes_possible - base_prob.numel(), dtype=base_prob.dtype)
+        base_prob = torch.cat([base_prob, padding], dim=0)
+
+    if min_nodes is None and max_nodes is None:
+        return DistributionNodes(prob=base_prob)
+
+    if min_nodes is None or max_nodes is None:
+        raise ValueError("Both --min-nodes and --max-nodes must be provided together.")
+    if min_nodes < 1:
+        raise ValueError("Minimum number of nodes must be at least 1.")
+    if max_nodes < min_nodes:
+        raise ValueError("Maximum number of nodes must be greater than or equal to the minimum.")
+
+    max_node_num = cfg.data.max_node_num
+    if max_nodes > max_node_num:
+        raise ValueError(
+            f"Requested max_nodes={max_nodes} exceeds cfg.data.max_node_num={max_node_num}. "
+            "Please increase the configuration before building the distribution."
+        )
+
+    probs = torch.zeros_like(base_prob)
+    probs[min_nodes : max_nodes + 1] = 1.0
+    total_mass = probs.sum()
+    if not torch.isfinite(total_mass) or total_mass <= 0:
+        raise ValueError("Probability mass over the requested range is zero; check the node range.")
+    probs /= total_mass
+    return DistributionNodes(prob=probs)
+
+
 def main():
+    args = parse_args()
     cfg = OmegaConf.structured(MainConfig())
+
+    if args.min_nodes is not None or args.max_nodes is not None:
+        if args.min_nodes is None or args.max_nodes is None:
+            raise ValueError("Both --min-nodes and --max-nodes must be specified.")
+        if args.max_nodes > cfg.data.max_node_num:
+            cfg.data.max_node_num = args.max_nodes
+        if args.max_nodes > cfg.sampler.num_nodes:
+            cfg.sampler.num_nodes = args.max_nodes
 
     if torch.cuda.is_available():
         cfg.general.device = "cuda:0"
@@ -32,7 +92,7 @@ def main():
     datamodule = SpectreDatasetModule(cfg)
     datamodule.setup()
 
-    node_dist = DistributionNodes(prob=datamodule.node_counts())
+    node_dist = build_node_distribution(cfg, datamodule, args.min_nodes, args.max_nodes)
 
     # sampling_metrics = PlanarSamplingMetrics(datamodule)
     # sampling_metrics = TreeSamplingMetrics(datamodule)

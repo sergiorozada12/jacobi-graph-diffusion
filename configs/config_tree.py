@@ -12,10 +12,10 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 7.5e-06
-    snr: float = 0.0075
-    scale_eps: float = 0.9
-    n_steps: int = 2
+    eps_time: float = 1e-05
+    snr: float = 0.1
+    scale_eps: float = 0.1
+    n_steps: int = 5
     num_nodes: int = 20
     test_graphs: int = 100
     use_corrector: bool = True
@@ -81,9 +81,9 @@ class SDEConfig:
     num_scales: int = 200
     s_min: float = 0.5
     s_max: float = 0.5
-    order: int = 110
+    order: int = 100
     sample_target: bool = True # True in general
-    eps_sde: float = 0.2
+    eps_sde: float = 0.1
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-5

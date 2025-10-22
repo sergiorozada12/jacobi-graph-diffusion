@@ -56,6 +56,8 @@ class TuningSettings:
     verbose: bool = True
     suppress_external_output: bool = False
     search_space: SearchSpace = field(default_factory=SearchSpace)
+    min_nodes: Optional[int] = None
+    max_nodes: Optional[int] = None
 
 
 def load_main_config(module_path: str, class_name: str = "MainConfig"):
@@ -74,6 +76,39 @@ def clone_config(cfg):
     cloned = OmegaConf.create(cfg_dict)
     OmegaConf.set_struct(cloned, False)
     return cloned
+
+
+def build_node_distribution(cfg, datamodule, min_nodes: Optional[int], max_nodes: Optional[int]):
+    max_nodes_possible = cfg.data.max_node_num + 1
+    base_prob = datamodule.node_counts(max_nodes_possible)
+    if base_prob.numel() < max_nodes_possible:
+        padding = torch.zeros(max_nodes_possible - base_prob.numel(), dtype=base_prob.dtype)
+        base_prob = torch.cat([base_prob, padding], dim=0)
+
+    if min_nodes is None and max_nodes is None:
+        return DistributionNodes(prob=base_prob)
+
+    if min_nodes is None or max_nodes is None:
+        raise ValueError("Both min_nodes and max_nodes must be provided.")
+    if min_nodes < 1:
+        raise ValueError("Minimum number of nodes must be at least 1.")
+    if max_nodes < min_nodes:
+        raise ValueError("Maximum number of nodes must be greater than or equal to the minimum.")
+
+    max_node_num = cfg.data.max_node_num
+    if max_nodes > max_node_num:
+        raise ValueError(
+            f"Requested max_nodes={max_nodes} exceeds cfg.data.max_node_num={max_node_num}. "
+            "Increase the configuration limits before building the distribution."
+        )
+
+    probs = torch.zeros_like(base_prob)
+    probs[min_nodes : max_nodes + 1] = 1.0
+    total_mass = probs.sum()
+    if not torch.isfinite(total_mass) or total_mass <= 0:
+        raise ValueError("Probability mass over the requested range is zero; verify the node bounds.")
+    probs /= total_mass
+    return DistributionNodes(prob=probs)
 
 
 def resolve_metrics_name(dataset_name: str, override: Optional[str]) -> str:
@@ -333,6 +368,13 @@ def run_tuning(base_cfg, settings: TuningSettings):
         cfg.sampler.test_graphs = settings.num_graphs
     if settings.seed is not None:
         cfg.general.seed = settings.seed
+    if settings.min_nodes is not None or settings.max_nodes is not None:
+        if settings.min_nodes is None or settings.max_nodes is None:
+            raise ValueError("Provide both min_nodes and max_nodes or neither.")
+        if settings.max_nodes > cfg.data.max_node_num:
+            cfg.data.max_node_num = settings.max_nodes
+        if settings.max_nodes > cfg.sampler.num_nodes:
+            cfg.sampler.num_nodes = settings.max_nodes
 
     pl.seed_everything(cfg.general.seed, workers=True)
 
@@ -348,7 +390,7 @@ def run_tuning(base_cfg, settings: TuningSettings):
         ref_metrics = compute_reference_metrics(datamodule, metrics_for_ref)
     metrics_module = metrics_cls(datamodule)
 
-    node_dist = DistributionNodes(prob=datamodule.node_counts())
+    node_dist = build_node_distribution(cfg, datamodule, settings.min_nodes, settings.max_nodes)
 
     model = build_model(cfg)
     load_weights(cfg, model, use_ema=cfg.train.use_ema)
@@ -366,7 +408,11 @@ def run_tuning(base_cfg, settings: TuningSettings):
 
     minimize_objective = settings.objective == "average_ratio"
     objective_mode = "min" if minimize_objective else "max"
-    store = HyperparamStore(cfg.data.data, settings.objective, objective_mode)
+    if settings.min_nodes is not None and settings.max_nodes is not None:
+        dataset_id = f"{cfg.data.data}_nodes_{settings.min_nodes}_{settings.max_nodes}"
+    else:
+        dataset_id = cfg.data.data
+    store = HyperparamStore(dataset_id, settings.objective, objective_mode)
     store.start_run()
 
     best_result = None

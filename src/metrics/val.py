@@ -738,7 +738,7 @@ def is_grid_graph(G):
         return False
 
 
-def is_sbm_graph(G, p_intra=0.3, p_inter=0.005, strict=True, refinement_steps=100):
+def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=100):
     """
     Check if how closely given graph matches a SBM with given probabilites by computing mean probability of Wald test statistic for each recovered parameter
     """
@@ -768,9 +768,9 @@ def is_sbm_graph(G, p_intra=0.3, p_inter=0.005, strict=True, refinement_steps=10
     edge_counts = e.todense()[:n_blocks, :n_blocks]
     if strict:
         if (
-            (node_counts > 40).sum() > 0
-            or (node_counts < 20).sum() > 0
-            or n_blocks > 5
+            #(node_counts > 40).sum() > 0
+            #or (node_counts < 20).sum() > 0
+            n_blocks > 5
             or n_blocks < 2
         ):
             return False

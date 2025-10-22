@@ -78,7 +78,7 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1000
+    num_scales: int = 200
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 100 # 30 works good for predictor

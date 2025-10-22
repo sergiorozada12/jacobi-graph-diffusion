@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GeneralConfig:
-    seed: int = 59
+    seed: int = 107
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
@@ -12,13 +12,13 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 0.01
+    eps_time: float = 0.001
     snr: float = 0.01
     scale_eps: float = 1.0
     n_steps: int = 1
     num_nodes: int = 10
     test_graphs: int = 100
-    use_corrector: bool = True
+    use_corrector: bool = False
 
 @dataclass
 class DataConfig:
@@ -78,12 +78,12 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 200
+    num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 100
-    sample_target: bool = False
-    eps_sde: float = 0.01
+    sample_target: bool = True
+    eps_sde: float = 0.00001
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-3
