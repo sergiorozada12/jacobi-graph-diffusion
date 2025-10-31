@@ -140,6 +140,8 @@ class PCSolver:
             eps_score=eps_score,
             eps_score_dist=eps_score_dist,
             use_sampled_features=use_sampled_features,
+            alpha=sde.alpha,
+            beta=sde.beta,
         )
 
         self.predictor = EulerMaruyamaPredictor(sde, jacobi_score)
@@ -184,7 +186,7 @@ class PCSolver:
             node_size=20,
             edge_width=0.8,
         )
-        save_figure(graph_fig, "history_graphs.png", dpi=150)
+        save_figure(graph_fig, "tests/history_graphs.png", dpi=150)
 
         heatmap_fig = plot_heatmap_snapshots(
             snapshots,
@@ -193,6 +195,6 @@ class PCSolver:
             vmin=0.0,
             vmax=1.0,
         )
-        save_figure(heatmap_fig, "history_heatmaps.png", dpi=150)
+        save_figure(heatmap_fig, "tests/history_heatmaps.png", dpi=150)
 
         return ((adj_mean if self.denoise else adj), N * (self.n_steps + 1))

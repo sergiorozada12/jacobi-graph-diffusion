@@ -17,7 +17,9 @@ class JacobiScore:
             eps_score=1e-10, 
             eps_score_dist=1e-5, 
             sample_target=True,
-            use_sampled_features=True
+            use_sampled_features=True,
+            alpha=1.0,
+            beta=1.0,
         ):
         self.order = order
         self.eps = eps_score
@@ -32,23 +34,74 @@ class JacobiScore:
         self.decay_cutoff = 1e-12
         self.use_sampled_features = use_sampled_features
         self.model.eval()
+        self.alpha = float(alpha)
+        self.beta = float(beta)
+        self.jacobi_a = self.beta - 1.0
+        self.jacobi_b = self.alpha - 1.0
 
-    def legendre_poly_and_derivative(self, x):
-        P = [torch.ones_like(x), x]  # P₀(x), P₁(x)
-        for n in range(1, self.order - 1):
-            pn = ((2 * n + 1) * x * P[n] - n * P[n - 1]) / (n + 1)
-            P.append(pn)
-        P_stack = torch.stack(P, dim=-1)  # shape [..., order]
+    def _jacobi_polynomials(self, x, order, a, b):
+        if order <= 0:
+            raise ValueError("Order must be positive")
 
-        dP = [torch.zeros_like(x), torch.ones_like(x)]
-        for n in range(1, self.order - 1):
-            dp = ((2 * n + 1) * (P[n] + x * dP[n]) - n * dP[n - 1]) / (n + 1)
-            dP.append(dp)
-        dP_stack = torch.stack(dP, dim=-1)
+        device, dtype = x.device, x.dtype
+        a_t = torch.as_tensor(a, dtype=dtype, device=device)
+        b_t = torch.as_tensor(b, dtype=dtype, device=device)
+        ab = a_t + b_t
+        diff = a_t - b_t
+        a_sq_minus_b_sq = diff * (a_t + b_t)
 
+        polys = []
+        p_prev = torch.ones_like(x)
+        polys.append(p_prev)
+
+        if order == 1:
+            return torch.stack(polys, dim=-1)
+
+        p_curr = 0.5 * ((2.0 + ab) * x + diff)
+        polys.append(p_curr)
+
+        for n in range(1, order - 1):
+            n_t = torch.as_tensor(float(n), dtype=dtype, device=device)
+            two_n = 2.0 * n_t
+            ab_n = two_n + ab
+            ab_np1 = ab_n + 1.0
+            ab_np2 = ab_np1 + 1.0
+
+            numerator1 = ab_np1 * (ab_n * ab_np2 * x + a_sq_minus_b_sq)
+            numerator2 = 2.0 * (n_t + a_t) * (n_t + b_t) * ab_np2
+            denominator = 2.0 * (n_t + 1.0) * (n_t + ab + 1.0) * ab_n
+
+            p_next = (numerator1 * p_curr - numerator2 * p_prev) / denominator
+            polys.append(p_next)
+            p_prev, p_curr = p_curr, p_next
+
+        return torch.stack(polys, dim=-1)
+
+    def jacobi_poly_and_derivative(self, x):
+        P_stack = self._jacobi_polynomials(x, self.order, self.jacobi_a, self.jacobi_b)
+
+        if self.order == 1:
+            dP_stack = torch.zeros_like(P_stack)
+            return P_stack, dP_stack
+
+        shifted = self._jacobi_polynomials(
+            x,
+            self.order - 1,
+            self.jacobi_a + 1.0,
+            self.jacobi_b + 1.0,
+        )
+
+        device, dtype = x.device, x.dtype
+        n = torch.arange(1, self.order, dtype=dtype, device=device)
+        factors = 0.5 * (n + self.jacobi_a + self.jacobi_b + 1.0)
+        shape = (1,) * x.ndim + (self.order - 1,)
+        factors = factors.view(shape)
+
+        dP_stack = torch.zeros_like(P_stack)
+        dP_stack[..., 1:] = shifted * factors
         return P_stack, dP_stack
 
-    def legendre_score(self, adj_0, adj, t):
+    def jacobi_score(self, adj_0, adj, t):
         orig_dtype = adj.dtype
         adj_0 = adj_0.to(torch.float64)
         adj = adj.to(torch.float64)
@@ -57,12 +110,34 @@ class JacobiScore:
         x0 = 2.0 * adj_0 - 1.0  # [B, N, N]
         xt = 2.0 * adj - 1.0    # [B, N, N]
 
-        P_x0, _     = self.legendre_poly_and_derivative(x0)     # [B, N, N, order]
-        P_xt, dP_xt = self.legendre_poly_and_derivative(xt)     # [B, N, N, order]
+        P_x0, _ = self.jacobi_poly_and_derivative(x0)     # [B, N, N, order]
+        P_xt, dP_xt = self.jacobi_poly_and_derivative(xt) # [B, N, N, order]
 
-        n = torch.arange(self.order, dtype=torch.float64, device=adj.device)
-        lambdas = 0.5 * (n * (n + 1))[None, None, None, :]               # [1, 1, 1, order]
-        log_weights = torch.log(2 * n + 1)                               # [order]
+        device = adj.device
+        n = torch.arange(self.order, dtype=torch.float64, device=device)
+        lambdas = 0.5 * n * (n + self.alpha + self.beta - 1.0)
+        lambdas = lambdas[None, None, None, :]
+
+        a = torch.tensor(self.jacobi_a, dtype=torch.float64, device=device)
+        b = torch.tensor(self.jacobi_b, dtype=torch.float64, device=device)
+        raw_weights = 2.0 * n + a + b + 1.0
+
+        log_weights = torch.empty_like(raw_weights)
+        general_mask = ~( (n == 0) & (torch.abs(raw_weights) < 1e-12) )
+        if general_mask.any():
+            n_gen = n[general_mask]
+            raw_gen = raw_weights[general_mask]
+            log_weights[general_mask] = (
+                torch.log(torch.abs(raw_gen))
+                + torch.lgamma(n_gen + a + 1.0)
+                + torch.lgamma(n_gen + b + 1.0)
+                - torch.lgamma(n_gen + 1.0)
+                - torch.lgamma(n_gen + a + b + 1.0)
+            )
+
+        if (~general_mask).any():
+            log_weights[~general_mask] = torch.lgamma(a + 1.0) + torch.lgamma(b + 1.0)
+
         log_decay = -t[:, None, None, None] * lambdas + log_weights      # [B,1,1,order]
         log_decay_max = log_decay.max(dim=-1, keepdim=True).values       # [B,1,1,1]
         decay_scaled = torch.exp(log_decay - log_decay_max)              # [B,1,1,order]
@@ -110,7 +185,7 @@ class JacobiScore:
             A_0_triu = torch.triu(A_0_dist, diagonal=1) # This critical for EGO
         A_0 = A_0_triu + A_0_triu.transpose(-1, -2)
 
-        score_raw = self.legendre_score(A_0, A_t_dist, t).float()
+        score_raw = self.jacobi_score(A_0, A_t_dist, t).float()
 
         score_triu = torch.triu(score_raw, diagonal=1)
         score = score_triu + score_triu.transpose(-1, -2)

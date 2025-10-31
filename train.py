@@ -6,11 +6,11 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
-#from configs.config_tree import MainConfig
+from configs.config_tree import MainConfig
 #from configs.config_sbm import MainConfig
 #from configs.config_pa import MainConfig
 #from configs.config_sbm_2comms import MainConfig
-from configs.config_planar import MainConfig
+#from configs.config_planar import MainConfig
 
 
 from src.train.trainer import DiffusionGraphModule
@@ -29,9 +29,9 @@ def main():
 
     node_dist = DistributionNodes(prob=datamodule.node_counts())
 
-    # sampling_metrics = TreeSamplingMetrics(datamodule)
+    sampling_metrics = TreeSamplingMetrics(datamodule)
     # sampling_metrics = SBMSamplingMetrics(datamodule)
-    sampling_metrics = PlanarSamplingMetrics(datamodule)
+    # sampling_metrics = PlanarSamplingMetrics(datamodule)
     # sampling_metrics = PASamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
@@ -63,14 +63,14 @@ def main():
     wandb_run_id = None
     logger = WandbLogger(
         project="jacobi-graph-diffusion",
-        name="planar-spectre",
+        name="tree-spectre",
         id=wandb_run_id,
         resume="must" if wandb_run_id else None,
     )
 
     trainer = Trainer(
         accelerator=cfg.general.device,
-        devices=[1],
+        devices=[0],
         strategy="ddp_find_unused_parameters_true",  # Needed to load old checkpoints
         max_epochs=cfg.train.num_epochs,
         check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,

@@ -18,7 +18,7 @@ class SamplerConfig:
     n_steps: int = 5
     num_nodes: int = 20
     test_graphs: int = 100
-    use_corrector: bool = True
+    use_corrector: bool = False
 
 @dataclass
 class DataConfig:
@@ -69,17 +69,17 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-4
-    num_epochs: int = 10_000
+    num_epochs: int = 20_000
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
 
 @dataclass
 class SDEConfig:
-    alpha: float = 1.0
+    alpha: float = 1.0 # alpha = beta = 1.0 / tested 0.5 / 1.5
     beta: float = 1.0
-    num_scales: int = 200
-    s_min: float = 0.5
+    num_scales: int = 1000
+    s_min: float = 0.5 # s_min = s_max = 1.0 for beta
     s_max: float = 0.5
     order: int = 100
     sample_target: bool = True # True in general
@@ -87,7 +87,7 @@ class SDEConfig:
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-5
-    time_schedule: str = "log"
+    time_schedule: str = "log" # This linear for beta
     time_schedule_power: float = 2.0
 
 @dataclass

@@ -17,14 +17,14 @@ class SamplerConfig:
     scale_eps: float = 1.0
     n_steps: int = 1
     num_nodes: int = 10
-    test_graphs: int = 100
+    test_graphs: int = 50
     use_corrector: bool = False
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "sbm_2comms_graphon"
-    batch_size: int = 100
+    batch_size: int = 50
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -78,7 +78,7 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1000
+    num_scales: int = 1_000
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 100

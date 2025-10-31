@@ -51,8 +51,15 @@ class JacobiSDE:
     
         class ReverseJacobiSDE(JacobiSDE):
             def __init__(self):
-                super().__init__(parent.N, parent.alpha, parent.beta,
-                                 parent.s_min, parent.s_max, parent.eps)
+                super().__init__(
+                    parent.N,
+                    parent.alpha,
+                    parent.beta,
+                    parent.s_min,
+                    parent.s_max,
+                    parent.eps,
+                    parent.max_force,
+                )
                 self.device = parent.device
     
             def sde(self, x, flags, t):
@@ -98,5 +105,19 @@ class JacobiSDE:
         return ReverseJacobiSDE()
 
     def prior_sampling(self, shape):
-        x = torch.rand(*shape, device=self.device).triu(1)
-        return x + x.transpose(-1, -2)
+        device = self.device
+        if device is None:
+            device = torch.device("cpu")
+        else:
+            device = torch.device(device)
+
+        if self.alpha == 1.0 and self.beta == 1.0:
+            base = torch.rand(*shape, device=device)
+        else:
+            dtype = torch.get_default_dtype()
+            alpha = torch.tensor(self.alpha, dtype=dtype)
+            beta = torch.tensor(self.beta, dtype=dtype)
+            base = torch.distributions.Beta(alpha, beta).sample(shape)
+            base = base.to(device)
+        base = base.triu(1)
+        return base + base.transpose(-1, -2)
