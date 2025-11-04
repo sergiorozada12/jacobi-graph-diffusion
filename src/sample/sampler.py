@@ -13,6 +13,7 @@ class Sampler:
         self.device = torch.device(cfg.general.device)
         self.max_num_nodes = cfg.data.max_node_num
         self.num_nodes = cfg.sampler.num_nodes
+        self.score_mode = getattr(cfg.train, "training_mode", "graph")
 
         self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
         self.model = model.to(self.device)
@@ -56,6 +57,7 @@ class Sampler:
             time_schedule=self.cfg.sde.time_schedule,
             time_schedule_power=self.cfg.sde.time_schedule_power,
             use_sampled_features=self.use_sampled_features,
+            score_mode=self.score_mode,
         )
 
     def set_model(self, model):

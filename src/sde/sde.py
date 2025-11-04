@@ -1,3 +1,4 @@
+import math
 import torch
 import numpy as np
 
@@ -42,8 +43,16 @@ class JacobiSDE:
 
     def transition(self, x, t, dt):
         drift, diffusion = self.sde(x, t)
-        mean = x + drift * dt
-        std = diffusion * np.sqrt(float(dt))
+
+        if torch.is_tensor(dt):
+            dt_tensor = dt.to(device=x.device, dtype=x.dtype).clamp_min(0.0)
+            while dt_tensor.ndim < x.ndim:
+                dt_tensor = dt_tensor.unsqueeze(-1)
+            mean = x + drift * dt_tensor
+            std = diffusion * torch.sqrt(dt_tensor).to(diffusion.dtype)
+        else:
+            mean = x + drift * dt
+            std = diffusion * math.sqrt(float(dt))
         return mean, std
 
     def reverse(self, score_fn):

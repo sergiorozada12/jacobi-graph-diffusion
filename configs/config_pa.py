@@ -66,6 +66,11 @@ class ModelConfig:
         "E": 2,
         "y": 0,
     })
+    score_output_dims: dict = field(default_factory=lambda: {
+        "X": 0,
+        "E": 1,
+        "y": 0,
+    })
 
 
 @dataclass
@@ -78,6 +83,8 @@ class TrainConfig:
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
+    training_mode: str = "graph"
+    score_loss_weight: float = 1.0
 
 
 @dataclass

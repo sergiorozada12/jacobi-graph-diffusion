@@ -245,15 +245,17 @@ class DiffusionGraphModule(pl.LightningModule):
         B = adj0.shape[0]
         mask = (flags[:, :, None] * flags[:, None, :]).float()
         dt = 1.0 / self.sde.N
-        N_max = int((T.max() / dt).ceil().item())
         adj = adj0.clone()
         std = torch.zeros_like(adj)
 
-        for i in range(N_max):
-            t_val = (i * dt)
-            vec_t = torch.full((B,), t_val, device=self.device)
+        n_full = torch.floor(T / dt).clamp(max=self.sde.N - 1).long()
+        max_full = int(n_full.max().item()) if n_full.numel() > 0 else 0
 
-            active = (T > t_val)
+        for i in range(max_full):
+            t_val = i * dt
+            vec_t = torch.full((B,), t_val, device=self.device, dtype=T.dtype)
+
+            active = n_full > i
             if not active.any():
                 break
 
@@ -266,8 +268,28 @@ class DiffusionGraphModule(pl.LightningModule):
             step = mean + std_all * noise
             step = torch.clamp(step, 1e-4, 1.0 - 1e-4)
 
-            adj = torch.where(active.view(B, 1, 1), step, adj)
-            std = torch.where(active.view(B, 1, 1), std_all, std)
+            active_mask = active.view(B, 1, 1)
+            adj = torch.where(active_mask, step, adj)
+            std = torch.where(active_mask, std_all, std)
+
+        t_full = n_full.to(dtype=T.dtype) * dt
+        dt_rem = (T - t_full).clamp_min(0.0)
+        has_remainder = dt_rem > 1e-12
+
+        if has_remainder.any():
+            vec_t = t_full
+            mean, std_all = self.sde.transition(adj, vec_t, dt_rem)
+            mean = mean * mask
+            std_all = std_all * mask
+            noise = gen_noise(adj, flags)
+
+            std_all = std_all.clamp(min=1e-4)
+            step = mean + std_all * noise
+            step = torch.clamp(step, 1e-4, 1.0 - 1e-4)
+
+            rem_mask = has_remainder.view(B, 1, 1)
+            adj = torch.where(rem_mask, step, adj)
+            std = torch.where(rem_mask, std_all, std)
 
         adj_triu = torch.triu(adj, diagonal=1)
         adj_triu_sample = torch.bernoulli(adj_triu)

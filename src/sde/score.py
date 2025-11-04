@@ -20,6 +20,7 @@ class JacobiScore:
             use_sampled_features=True,
             alpha=1.0,
             beta=1.0,
+            direct_model_score=False,
         ):
         self.order = order
         self.eps = eps_score
@@ -33,7 +34,9 @@ class JacobiScore:
         self.sample_target = sample_target
         self.decay_cutoff = 1e-12
         self.use_sampled_features = use_sampled_features
-        self.model.eval()
+        self.direct_model_score = direct_model_score
+        if self.model is not None:
+            self.model.eval()
         self.alpha = float(alpha)
         self.beta = float(beta)
         self.jacobi_a = self.beta - 1.0
@@ -174,6 +177,13 @@ class JacobiScore:
         y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
 
         pred = self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+
+        if self.direct_model_score:
+            score_raw = pred.E[..., 0]
+            score_triu = torch.triu(score_raw, diagonal=1)
+            score = score_triu + score_triu.transpose(-1, -2)
+            return score * flags_mask
+
         assert_symmetric_and_masked_E(pred.E, flags)
         A_0_dist = F.softmax(pred.E, dim=-1)[..., 1:].sum(dim=-1).float()
         A_0_dist = A_0_dist * flags_mask

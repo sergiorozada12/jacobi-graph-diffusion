@@ -14,6 +14,7 @@ from configs.config_tree import MainConfig
 
 
 from src.train.trainer import DiffusionGraphModule
+from src.train.direct_score_module import DirectScoreModule
 from src.dataset.synth import SynthGraphDatasetModule
 from src.dataset.spectre import SpectreDatasetModule
 from src.dataset.utils import DistributionNodes, compute_reference_metrics
@@ -23,6 +24,12 @@ from src.metrics.val import TreeSamplingMetrics, SBMSamplingMetrics, PlanarSampl
 def main():
     cfg = OmegaConf.structured(MainConfig())
     _ = pl.seed_everything(cfg.general.seed)
+
+    train_mode = getattr(cfg.train, "training_mode", "graph")
+    if train_mode == "direct_score":
+        cfg.model.output_dims = dict(cfg.model.score_output_dims)
+    else:
+        cfg.model.output_dims = dict(cfg.model.output_dims)
 
     datamodule = SpectreDatasetModule(cfg)
     datamodule.setup()
@@ -35,7 +42,8 @@ def main():
     # sampling_metrics = PASamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
-    model = DiffusionGraphModule(
+    module_cls = DirectScoreModule if train_mode == "direct_score" else DiffusionGraphModule
+    model = module_cls(
         cfg=cfg,
         sampling_metrics=sampling_metrics,
         ref_metrics=ref_metrics,
@@ -70,7 +78,7 @@ def main():
 
     trainer = Trainer(
         accelerator=cfg.general.device,
-        devices=[0],
+        devices=[1],
         strategy="ddp_find_unused_parameters_true",  # Needed to load old checkpoints
         max_epochs=cfg.train.num_epochs,
         check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,

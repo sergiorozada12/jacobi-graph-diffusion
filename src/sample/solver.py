@@ -119,6 +119,7 @@ class PCSolver:
             time_schedule="log",
             time_schedule_power=2.0,
             use_sampled_features=True,
+            score_mode="graph",
         ):
         self.sde = sde
         self.shape_adj = shape_adj
@@ -129,6 +130,7 @@ class PCSolver:
         self.use_corrector = use_corrector
         self.time_schedule = time_schedule
         self.time_schedule_power = time_schedule_power
+        self.score_mode = score_mode
         
         jacobi_score = JacobiScore(
             model=model,
@@ -142,6 +144,7 @@ class PCSolver:
             use_sampled_features=use_sampled_features,
             alpha=sde.alpha,
             beta=sde.beta,
+            direct_model_score=(score_mode == "direct_score"),
         )
 
         self.predictor = EulerMaruyamaPredictor(sde, jacobi_score)

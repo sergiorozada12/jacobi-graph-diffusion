@@ -28,6 +28,8 @@ def parse_args():
 def main():
     args = parse_args()
     cfg = OmegaConf.structured(MainConfig())
+    if getattr(cfg.train, "training_mode", "graph") == "direct_score":
+        cfg.model.output_dims = dict(cfg.model.score_output_dims)
     
     search_space = SearchSpace(
         order=[100],

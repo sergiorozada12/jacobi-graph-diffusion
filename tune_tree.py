@@ -24,6 +24,8 @@ def parse_args():
 def main():
     args = parse_args()
     cfg = OmegaConf.structured(MainConfig())
+    if getattr(cfg.train, "training_mode", "graph") == "direct_score":
+        cfg.model.output_dims = dict(cfg.model.score_output_dims)
     
 
     search_space = SearchSpace(
@@ -31,7 +33,7 @@ def main():
         sample_target=[True],
         eps_sde=[0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001, 0.0000001],
         # eps_sde=[0.001, 0.0001, 0.00001],
-        time_schedule=["log"],
+        time_schedule=["linear"],
         eps_time=[0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001, 0.0000001],
         # eps_time=[0.00001, 0.000001, 0.0000001],
         use_corrector=[False],
