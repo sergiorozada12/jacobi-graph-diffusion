@@ -12,13 +12,14 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 0.001
+    eps_time: float = 1e-9 #1e-8
     snr: float = 0.01
     scale_eps: float = 1.0
     n_steps: int = 1
     num_nodes: int = 10
     test_graphs: int = 50
     use_corrector: bool = False
+    predictor: str = "em"  # "em" or "milstein"
 
 @dataclass
 class DataConfig:
@@ -78,8 +79,7 @@ class TrainConfig:
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
-    training_mode: str = "graph"
-    score_loss_weight: float = 1.0
+    training_mode: str = "graph"  # options: "graph", "weighted", "direct_score"
 
 @dataclass
 class SDEConfig:
@@ -90,7 +90,7 @@ class SDEConfig:
     s_max: float = 1.0
     order: int = 100
     sample_target: bool = True
-    eps_sde: float = 0.00001
+    eps_sde: float = 1e-5
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-3

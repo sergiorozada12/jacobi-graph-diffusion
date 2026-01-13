@@ -83,8 +83,7 @@ class TrainLoss(nn.Module):
         return to_log
 
 
-class DirectScoreLoss(nn.Module):
-    """Masked loss for direct score regression with optional relative scaling."""
+class MaskedMSELoss(nn.Module):
 
     def __init__(
         self,

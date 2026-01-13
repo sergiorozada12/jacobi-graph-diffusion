@@ -7,7 +7,7 @@ import scipy as sp
 
 NUM_GRAPHS = 500
 PLANAR_SIZE_RANGE = (10, 20)
-TREE_SIZE_RANGE = (10, 20)
+TREE_SIZE_RANGE = (20, 80)
 SBM_COMMS_RANGE = (2, 2)
 SBM_COMMS_SIZE = (20, 40)
 EGO_NUM_EGOS_RANGE = (2, 4)
@@ -194,8 +194,8 @@ if __name__ == "__main__":
     ego_dataset = split_graphs(ego_graphs, VAL_RATIO, TEST_RATIO, seed=SEED)
     pa_dataset = split_graphs(pa_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 3)
 
-    save_graphs(planar_dataset, PATHS["planar"])
+    #save_graphs(planar_dataset, PATHS["planar"])
     save_graphs(tree_dataset, PATHS["tree"])
-    save_graphs(sbm_dataset, PATHS["sbm"])
-    save_graphs(ego_dataset, PATHS["ego"])
-    save_graphs(pa_dataset, PATHS["pa"])
+    #save_graphs(sbm_dataset, PATHS["sbm"])
+    #save_graphs(ego_dataset, PATHS["ego"])
+    #save_graphs(pa_dataset, PATHS["pa"])

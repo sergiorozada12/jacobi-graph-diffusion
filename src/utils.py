@@ -50,16 +50,21 @@ def build_time_schedule(N, T, eps, kind="log", power=2.0):
     return ts.to(dtype=torch.float32)
 
 
-def node_flags(adjs, eps=1e-5):
+def node_flags(adjs, observed_mask=None, eps=1e-5):
     """
-    Compute binary flags for active nodes based on adjacency matrix.
+    Compute binary flags for active nodes.
     
     Args:
         adjs (Tensor): Shape [B, N, N] or [B, C, N, N].
+        observed_mask (Tensor, optional): Pre-computed mask indicating which nodes are observed.
+        eps (float): Threshold for detecting active nodes when observed_mask is None.
 
     Returns:
         Tensor: Binary flags of shape [B, N].
     """
+    if observed_mask is not None:
+        return observed_mask.to(adjs.device).float()
+
     flags = (adjs.abs().sum(-1) > eps).float()
     if flags.ndim == 3:
         flags = flags[:, 0, :]
@@ -132,42 +137,62 @@ def quantize(adjs, thr=0.5):
     return torch.where(adjs < thr, torch.zeros_like(adjs), torch.ones_like(adjs))
 
 
-def adjs_to_graphs(adjs, is_cuda=False):
+def adjs_to_graphs(adjs, is_cuda=False, keep_isolates=False, nodelist=None, keep_zero_weights=False):
     """
     Convert adjacency matrices to NetworkX graphs.
 
     Args:
         adjs (Tensor): Shape [B, N, N].
         is_cuda (bool): Whether tensors are on CUDA.
+        keep_isolates (bool): Whether to retain isolated nodes.
+        nodelist (Sequence, optional): Node labels to use. Must have length N if provided.
+        keep_zero_weights (bool): Whether to include zero-weight edges.
 
     Returns:
         List[nx.Graph]: List of NetworkX graphs.
     """
     graph_list = []
     for adj in adjs:
-        if is_cuda:
-            adj = adj.detach().cpu().numpy()
-        G = nx.from_numpy_array(adj)
-        G.remove_edges_from(nx.selfloop_edges(G))
-        G.remove_nodes_from(list(nx.isolates(G)))
-        if G.number_of_nodes() < 1:
-            G.add_node(1)
+        if isinstance(adj, torch.Tensor):
+            adj_np = adj.detach().cpu().numpy()
+        else:
+            adj_np = np.asarray(adj)
+        num_nodes = adj_np.shape[0]
+        nodes = list(range(num_nodes)) if nodelist is None else list(nodelist)
+        if len(nodes) != num_nodes:
+            raise ValueError(f"nodelist length {len(nodes)} does not match adjacency size {num_nodes}.")
+
+        G = nx.Graph()
+        G.add_nodes_from(nodes)
+        for i in range(num_nodes):
+            for j in range(i + 1, num_nodes):
+                w = float(adj_np[i, j])
+                if keep_zero_weights or w != 0.0:
+                    G.add_edge(nodes[i], nodes[j], weight=w)
+        if not keep_isolates:
+            G.remove_nodes_from(list(nx.isolates(G)))
+            if G.number_of_nodes() < 1:
+                G.add_node(nodes[0] if nodes else 0)
         graph_list.append(G)
     return graph_list
 
 
-def graphs_to_tensor(graph_list, max_node_num):
+def graphs_to_tensor(graph_list, max_node_num, mask_attr=None):
     """
     Convert list of graphs to padded adjacency tensor.
 
     Args:
         graph_list (List[nx.Graph]): List of graphs.
         max_node_num (int): Max node limit per graph.
+        mask_attr (str, optional): Node attribute storing an observed flag. If provided,
+            a tensor of shape [B, N] with the observed mask is also returned.
 
     Returns:
-        Tensor: Tensor of shape [B, N, N].
+        Tensor or Tuple[Tensor, Tensor]: Adjacency tensor [B, N, N] and optionally
+        an observed mask tensor [B, N].
     """
     adjs_list = []
+    mask_list = [] if mask_attr is not None else None
     for g in graph_list:
         node_list = list(g.nodes())
         adj = nx.to_numpy_array(g, nodelist=node_list)
@@ -175,8 +200,22 @@ def graphs_to_tensor(graph_list, max_node_num):
         padded = pad_adjs(adj, max_node_num)
         adjs_list.append(padded)
 
+        if mask_attr is not None:
+            mask = np.zeros(max_node_num, dtype=np.float32)
+            num_nodes = min(len(node_list), max_node_num)
+            for idx in range(num_nodes):
+                node = node_list[idx]
+                mask[idx] = float(bool(g.nodes[node].get(mask_attr, False)))
+            mask_list.append(mask)
+
     adjs_np = np.stack(adjs_list)
-    return torch.tensor(adjs_np, dtype=torch.float32)
+    adjs_tensor = torch.tensor(adjs_np, dtype=torch.float32)
+
+    if mask_attr is not None:
+        masks_np = np.stack(mask_list)
+        mask_tensor = torch.tensor(masks_np, dtype=torch.float32)
+        return adjs_tensor, mask_tensor
+    return adjs_tensor
 
 
 def pad_adjs(adj, max_node_num):
@@ -198,7 +237,7 @@ def pad_adjs(adj, max_node_num):
     return padded
 
 
-def init_features(adjs, init_type, max_feat_num):
+def init_features(adjs, init_type, max_feat_num, observed_mask=None):
     """
     Initialize node features, then mask them.
 
@@ -206,6 +245,7 @@ def init_features(adjs, init_type, max_feat_num):
         adjs (Tensor): Adjacency tensor [B, N, N].
         init_type (str): "zeros" or "ones".
         max_feat_num (int): Number of features per node.
+        observed_mask (Tensor, optional): Explicit node mask to apply.
 
     Returns:
         Tensor: Node feature tensor [B, N, F].
@@ -216,11 +256,17 @@ def init_features(adjs, init_type, max_feat_num):
         features = torch.ones(adjs.size(0), adjs.size(1), max_feat_num, dtype=torch.float32)
     else:
         raise NotImplementedError(f"Unknown init type {init_type}")
-    flags = node_flags(adjs)
+    flags = node_flags(adjs, observed_mask)
     return mask_x(features, flags)
 
 
-def graph_list_to_dataset(graph_list, init_type, max_node_num, max_feat_num):
+def graph_list_to_dataset(
+    graph_list,
+    init_type,
+    max_node_num,
+    max_feat_num,
+    mask_attr=None,
+):
     """
     Convert list of graphs to a PyTorch dataset.
 
@@ -229,12 +275,21 @@ def graph_list_to_dataset(graph_list, init_type, max_node_num, max_feat_num):
         init_type (str): Feature init mode ("zeros" or "ones").
         max_node_num (int): Max number of nodes per graph.
         max_feat_num (int): Number of node features.
+        mask_attr (str, optional): Node attribute indicating observed nodes to
+            include in the returned dataset.
 
     Returns:
         TensorDataset: Dataset with (features, adjs).
     """
-    adjs = graphs_to_tensor(graph_list, max_node_num)
-    features = init_features(adjs, init_type, max_feat_num)
+    tensor_out = graphs_to_tensor(graph_list, max_node_num, mask_attr=mask_attr)
+    if mask_attr is not None:
+        adjs, masks = tensor_out
+    else:
+        adjs = tensor_out
+        masks = None
+    features = init_features(adjs, init_type, max_feat_num, observed_mask=masks)
+    if masks is not None:
+        return TensorDataset(features, adjs, masks)
     return TensorDataset(features, adjs)
 
 

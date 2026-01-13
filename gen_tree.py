@@ -8,7 +8,8 @@ from src.models.transformer_model import GraphTransformer
 from src.dataset.spectre import SpectreDatasetModule
 from src.dataset.utils import DistributionNodes, compute_reference_metrics
 from src.sample.sampler import Sampler
-from configs.config_tree import MainConfig
+#from configs.config_tree import MainConfig
+from configs.config_tree_graphon import MainConfig
 from src.metrics.val import TreeSamplingMetrics
 from src.visualization.plots import save_figure
 

@@ -32,14 +32,23 @@ class JacobiSDE:
         tt = torch.as_tensor(t, dtype=torch.float32, device=self.device).clamp(0.0, self.T)
         return self.s_min + (self.s_max - self.s_min) * torch.sin(0.5 * np.pi * tt) ** 2
 
-    def sde(self, x, t):
+    def _drift_diffusion_and_grad(self, x, t):
         s = self._speed(t)
         while s.ndim < x.ndim:
             s = s.unsqueeze(-1)
+
         drift = 0.5 * s * (self.alpha * (1.0 - x) - self.beta * x)
         diffusion_2 = (s * x * (1.0 - x))
-        diffusion = torch.sqrt(diffusion_2).clamp_min(self.eps) # PLAY WITH THIS THRESHOLD!
+        diffusion = torch.sqrt(diffusion_2).clamp_min(self.eps)
+        diffusion_grad = 0.5 * s * (1.0 - 2.0 * x) / diffusion.clamp_min(self.eps)
+        return drift, diffusion, diffusion_grad
+
+    def sde(self, x, t):
+        drift, diffusion, _ = self._drift_diffusion_and_grad(x, t)
         return drift, diffusion
+
+    def sde_with_diffusion_grad(self, x, t):
+        return self._drift_diffusion_and_grad(x, t)
 
     def transition(self, x, t, dt):
         drift, diffusion = self.sde(x, t)
@@ -72,14 +81,14 @@ class JacobiSDE:
                 self.device = parent.device
     
             def sde(self, x, flags, t):
-                #x = x.clamp(self.eps, 1.0 - self.eps)
-    
-                # Base drift and diffusion from SDE
-                drift, diffusion = parent.sde(x, t)
-                drift     = mask_adjs(drift, flags)
-                diffusion = mask_adjs(diffusion, flags)
+                drift, diffusion, _ = self.sde_with_diffusion_grad(x, flags, t)
+                return drift, diffusion
 
-                #x = x.clamp(self.eps, 1.0 - self.eps)
+            def sde_with_diffusion_grad(self, x, flags, t):
+                drift, diffusion, diffusion_grad = parent._drift_diffusion_and_grad(x, t)
+                drift          = mask_adjs(drift, flags)
+                diffusion      = mask_adjs(diffusion, flags)
+                diffusion_grad = mask_adjs(diffusion_grad, flags)
     
                 # Score-based force
                 score = score_fn.compute_score(x, flags, t)
@@ -89,7 +98,7 @@ class JacobiSDE:
                 # Correct drift with scaled force
                 drift = drift - force
     
-                return drift, diffusion
+                return drift, diffusion, diffusion_grad
             
             def sde_logit(self, x, flags, t):
                 x = x.clamp(self.eps, 1.0 - self.eps)

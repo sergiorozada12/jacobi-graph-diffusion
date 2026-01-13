@@ -19,6 +19,7 @@ class SamplerConfig:
     num_nodes: int = 10
     test_graphs: int = 32
     use_corrector: bool = True
+    predictor: str = "em"  # "em" or "milstein"
 
 @dataclass
 class DataConfig:
@@ -78,8 +79,7 @@ class TrainConfig:
     lambda_train: float = 5.0
     use_ema: bool = False
     ema_decay: float = 0.999
-    training_mode: str = "graph"
-    score_loss_weight: float = 1.0
+    training_mode: str = "graph"  # options: "graph", "weighted", "direct_score"
 
 @dataclass
 class SDEConfig:

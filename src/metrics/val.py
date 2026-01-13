@@ -18,12 +18,14 @@ import subprocess as sp
 import concurrent.futures
 import powerlaw
 
+from typing import Any, Dict, List, Optional
+
 import pygsp as pg
 import secrets
 from string import ascii_uppercase, digits
 from datetime import datetime
 from scipy.linalg import eigvalsh
-from scipy.stats import chi2
+from scipy.stats import chi2, ks_2samp, wasserstein_distance
 from src.metrics.utils import (
     compute_mmd,
     gaussian_emd,
@@ -797,9 +799,9 @@ def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=10
 
 def is_pa_graph(
     G,
-    alpha_range=(2.2, 3.4),
-    significance_level=0.1,
-    hub_scaling=0.6,
+    alpha_range=(2.6, 3.4),
+    significance_level=0.05,
+    hub_scaling=0.8,
 ):
     if not nx.is_connected(G):
         return False
@@ -820,9 +822,9 @@ def is_pa_graph(
     xmin = getattr(fit.power_law, "xmin", np.nan)
     if not np.isfinite(xmin):
         return False
-    tail_count = np.sum(degrees >= xmin)
-    if tail_count < 5:
-        return False
+    #tail_count = np.sum(degrees >= xmin)
+    #if tail_count < 5:
+    #    return False
     try:
         R, p = fit.distribution_compare("power_law", "exponential", normalized_ratio=True)
     except Exception:
@@ -950,7 +952,7 @@ class SpectreSamplingMetrics(nn.Module):
     def loader_to_nx(self, loader):
         networkx_graphs = []
         for i, batch in enumerate(loader):
-            _, adjs = batch
+            adjs = batch[1]
             G = adjs_to_graphs(adjs, is_cuda=True)
             networkx_graphs.extend(G)
         return networkx_graphs
@@ -1232,3 +1234,170 @@ class IMDBSamplingMetrics(SpectreSamplingMetrics):
             compute_emd=False,
             metrics_list=["degree", "clustering", "orbit", "spectre", "wavelet"],
         )
+
+
+class WirelessSamplingMetrics:
+    """
+    Metrics module for MetroFi experiments.
+
+    Computes two families of metrics:
+    1) Edge-wise interference distribution distances (KS and Wasserstein)
+       across the 70x70 MAC universe.
+    2) Structural metrics (degree, spectre) on subgraphs sampled from generated
+       full graphs using the empirical size distribution of the test set.
+    """
+
+    def __init__(self, datamodule):
+        self.train_graphs = self._loader_to_nx(datamodule.train_dataloader())
+        self.val_graphs = self._loader_to_nx(datamodule.val_dataloader())
+        self.test_graphs = self._loader_to_nx(datamodule.test_dataloader())
+
+        self.test_size_support, self.test_size_probs = self._graph_size_distribution(self.test_graphs)
+        self.rng = np.random.default_rng()
+
+    def reset(self) -> None:
+        # No mutable state to reset.
+        return
+
+    def forward(
+        self,
+        generated_graphs: List[Any],
+        ref_metrics: Optional[Dict[str, Any]] = None,
+        local_rank: int = 0,
+        test: bool = False,
+    ) -> Dict[str, float]:
+        reference_graphs = self.test_graphs if test else self.val_graphs
+        split = "test" if test else "validation"
+
+        if local_rank == 0:
+            print(
+                f"Computing wireless metrics between {len(generated_graphs)} generated graphs "
+                f"and {len(reference_graphs)} {split} graphs."
+            )
+
+        edge_metrics = self._edge_distribution_metrics(reference_graphs, generated_graphs)
+
+        sampled_generated = self._sample_subgraphs(generated_graphs, len(reference_graphs))
+
+        weighted_degree = self._weighted_degree_stats(reference_graphs, sampled_generated)
+
+        spectre = spectral_stats(
+            reference_graphs,
+            sampled_generated,
+            is_parallel=True,
+            n_eigvals=-1,
+            compute_emd=False,
+        )
+
+        metrics_out = {
+            "edge_ks": edge_metrics["edge_ks_mean"],
+            "edge_wasserstein": edge_metrics["edge_wasserstein_mean"],
+            "edge_pairs_used": edge_metrics["edge_pairs_used"],
+            "degree_weighted": weighted_degree,
+            "spectre": spectre,
+        }
+
+        if wandb.run:
+            for key, val in metrics_out.items():
+                wandb.run.summary[f"{split}/{key}"] = val
+
+        if local_rank == 0 and ref_metrics:
+            ref_split = ref_metrics.get("test" if test else "val") or {}
+            if ref_split:
+                print(f"Reference metrics available for {split}: {list(ref_split.keys())}")
+
+        return metrics_out
+
+    @staticmethod
+    def _loader_to_nx(loader):
+        networkx_graphs = []
+        for batch in loader:
+            adjs = batch[1]
+            G = adjs_to_graphs(adjs, is_cuda=True)
+            networkx_graphs.extend(G)
+        return networkx_graphs
+
+    @staticmethod
+    def _edge_value(data: Dict[str, Any]) -> float:
+        return float(data.get("weight", 0.0))
+
+    def _collect_edge_values(self, graphs: List[nx.Graph]) -> Dict[tuple, List[float]]:
+        edge_vals: Dict[tuple, List[float]] = {}
+        for g in graphs:
+            for u, v, data in g.edges(data=True):
+                key = tuple(sorted((int(u), int(v))))
+                edge_vals.setdefault(key, []).append(self._edge_value(data))
+        return edge_vals
+
+    def _edge_distribution_metrics(self, reference_graphs: List[nx.Graph], generated_graphs: List[nx.Graph]) -> Dict[str, float]:
+        ref_vals = self._collect_edge_values(reference_graphs)
+        gen_vals = self._collect_edge_values(generated_graphs)
+
+        ks_scores = []
+        wass_scores = []
+        for key in set(ref_vals.keys()).union(gen_vals.keys()):
+            ref = ref_vals.get(key, [])
+            gen = gen_vals.get(key, [])
+            if len(ref) == 0 or len(gen) == 0:
+                continue
+            ks_scores.append(ks_2samp(ref, gen).statistic)
+            wass_scores.append(wasserstein_distance(ref, gen))
+
+        edge_pairs_used = len(ks_scores)
+        edge_ks_mean = float(np.mean(ks_scores)) if ks_scores else 0.0
+        edge_wass_mean = float(np.mean(wass_scores)) if wass_scores else 0.0
+
+        return {
+            "edge_pairs_used": edge_pairs_used,
+            "edge_ks_mean": edge_ks_mean,
+            "edge_wasserstein_mean": edge_wass_mean,
+        }
+
+    @staticmethod
+    def _graph_size_distribution(graphs: List[nx.Graph]) -> tuple:
+        sizes = np.array([max(1, g.number_of_nodes()) for g in graphs], dtype=int)
+        support, counts = np.unique(sizes, return_counts=True)
+        probs = counts / counts.sum() if counts.sum() > 0 else np.array([1.0])
+        return support, probs
+
+    def _sample_subgraphs(self, graphs: List[nx.Graph], num_samples: int) -> List[nx.Graph]:
+        if len(self.test_size_support) == 0:
+            return []
+        sampled_graphs: List[nx.Graph] = []
+        sizes = self.rng.choice(self.test_size_support, size=num_samples, p=self.test_size_probs)
+        for g, target_size in zip(graphs, sizes):
+            nodes = list(g.nodes())
+            if len(nodes) <= target_size:
+                sampled_graphs.append(g.copy())
+                continue
+            chosen = self.rng.choice(nodes, size=int(target_size), replace=False)
+            sampled_graphs.append(g.subgraph(chosen).copy())
+        return sampled_graphs
+
+    @staticmethod
+    def _weighted_degree_stats_worker(G, bins):
+        degrees = np.array([d for _, d in G.degree(weight="weight")], dtype=float)
+        hist, _ = np.histogram(degrees, bins=bins, density=False)
+        return hist
+
+    def _weighted_degree_stats(self, reference_graphs: List[nx.Graph], generated_graphs: List[nx.Graph]) -> float:
+        all_degrees = []
+        for g in reference_graphs + generated_graphs:
+            all_degrees.extend([d for _, d in g.degree(weight="weight")])
+
+        max_deg = max(all_degrees) if all_degrees else 1.0
+        min_deg = min(all_degrees) if all_degrees else 0.0
+        if max_deg == min_deg:
+            max_deg = min_deg + 1.0
+        bins = np.linspace(min_deg, max_deg, num=51)
+
+        ref_hists = []
+        pred_hists = []
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for hist in executor.map(self._weighted_degree_stats_worker, reference_graphs, [bins] * len(reference_graphs)):
+                ref_hists.append(hist)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for hist in executor.map(self._weighted_degree_stats_worker, generated_graphs, [bins] * len(generated_graphs)):
+                pred_hists.append(hist)
+
+        return compute_mmd(ref_hists, pred_hists, kernel=gaussian_tv, is_hist=True)

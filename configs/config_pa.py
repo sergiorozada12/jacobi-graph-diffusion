@@ -3,24 +3,24 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GeneralConfig:
-    seed: int = 508
+    seed: int = 12
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
     check_val_every_n_epochs: int = 500
     save_checkpoint_every_n_epochs: int = 1000
 
-
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 0.001
+    eps_time: float = 1e-5
     snr: float = 1.0
     scale_eps: float = 2.0
     n_steps: int = 2
     num_nodes: int = 60
     test_graphs: int = 100
-    use_corrector: bool = True
+    use_corrector: bool = False
+    predictor: str = "em"  # "em" or "milstein"
 
 
 @dataclass
@@ -34,32 +34,31 @@ class DataConfig:
     val_split: float = 0.1
     init: str = "ones"
 
-
 @dataclass
 class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = 'rrwp'
-    rrwp_steps: int = 20
+    rrwp_steps: int = 10
     use_sampled_features: bool = True
-    n_layers: int = 10
+    n_layers: int = 4
     input_dims: dict = field(default_factory=lambda: {
-        "X": 20,
-        "E": 20,
+        "X": 10,
+        "E": 10,
         "y": 6,
     })
     hidden_mlp_dims: dict = field(default_factory=lambda: {
-        'X': 128,
-        'E': 64,
-        'y': 128
+        'X': 64,
+        'E': 32,
+        'y': 64
     })
     hidden_dims: dict = field(default_factory=lambda: {
-        'dx': 256,
-        'de': 64,
-        'dy': 64,
-        'n_head': 8,
-        'dim_ffX': 256,
-        'dim_ffE': 64,
-        'dim_ffy': 256
+        'dx': 64,
+        'de': 32,
+        'dy': 32,
+        'n_head': 4,
+        'dim_ffX': 64,
+        'dim_ffE': 32,
+        'dim_ffy': 64
     })
     output_dims: dict = field(default_factory=lambda: {
         "X": 0,
@@ -78,25 +77,24 @@ class TrainConfig:
     lr: float = 2e-4
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-5
-    num_epochs: int = 10_000
+    eps: float = 1e-6
+    num_epochs: int = 15_000
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
     training_mode: str = "graph"
-    score_loss_weight: float = 1.0
 
 
 @dataclass
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 200
+    num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 100
+    order: int = 30 # 30
     sample_target: bool = True
-    eps_sde: float = 0.00001
+    eps_sde: float = 1e-1
     max_force: float = 1000.0
     eps_score: float = 1e-10
     eps_score_dist: float = 1e-5

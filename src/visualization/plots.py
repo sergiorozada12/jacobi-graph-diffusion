@@ -225,3 +225,163 @@ def save_figure(fig: plt.Figure, path: Union[str, PathLike[str]], *, dpi: int = 
 
 def close_figure(fig: plt.Figure) -> None:
     plt.close(fig)
+
+
+def _edge_widths_from_weights(weights, edge_min_width, edge_max_width):
+    if not weights:
+        return None
+    max_w = max((abs(w) for w in weights), default=0.0)
+    max_w = max(max_w, 1e-8)
+    return [
+        edge_min_width + (edge_max_width - edge_min_width) * (abs(w) / max_w)
+        for w in weights
+    ]
+
+
+def plot_weighted_adj_and_graph(
+    adj: ArrayLike,
+    graph: Optional[nx.Graph] = None,
+    flags: Optional[ArrayLike] = None,
+    *,
+    dataset_name: Optional[str] = None,
+    layout_seed: int = 42,
+    cmap: str = "viridis",
+    edge_min_width: float = 0.3,
+    edge_max_width: float = 4.0,
+    node_size: int = 60,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> plt.Figure:
+    """
+    Plot a weighted adjacency matrix alongside its graph where edge width encodes weight.
+
+    Args:
+        adj: Adjacency matrix.
+        graph: Optional graph to draw; if not provided, it is built from adj.
+        flags: Optional mask marking active nodes; used to crop padded nodes.
+        dataset_name: Dataset label for layout heuristics.
+        layout_seed: Seed for deterministic layouts.
+        cmap: Matplotlib colormap for the heatmap.
+        edge_min_width: Minimum drawn edge width.
+        edge_max_width: Maximum drawn edge width.
+        node_size: Node marker size.
+        vmin: Optional lower bound for the heatmap color scale.
+        vmax: Optional upper bound for the heatmap color scale.
+    """
+    adj_np = _to_numpy(adj)
+
+    if flags is not None:
+        flags_np = _to_numpy(flags).astype(bool)
+        active_idx = np.where(flags_np)[0]
+        if active_idx.size > 0:
+            adj_np = adj_np[np.ix_(active_idx, active_idx)]
+
+    fig, axs = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+
+    adj_masked = np.ma.masked_invalid(adj_np)
+    im = axs[0].imshow(
+        adj_masked,
+        vmin=float(adj_masked.min()) if vmin is None else vmin,
+        vmax=float(adj_masked.max()) if vmax is None else vmax,
+        cmap=cmap,
+    )
+    axs[0].set_title("Adjacency Heatmap")
+    axs[0].axis("off")
+    fig.colorbar(im, ax=axs[0], fraction=0.046, pad=0.04)
+
+    graph = graph if graph is not None else nx.from_numpy_array(np.nan_to_num(adj_np, nan=0.0))
+    pos = _compute_layout(graph, dataset_name, layout_seed)
+
+    weights = [data.get("weight", 0.0) for _, _, data in graph.edges(data=True)]
+    widths = _edge_widths_from_weights(weights, edge_min_width, edge_max_width)
+
+    nx.draw(
+        graph,
+        pos=pos,
+        ax=axs[1],
+        with_labels=False,
+        node_size=node_size,
+        width=widths,
+        edge_color="#2c3e50",
+    )
+    axs[1].set_title("Weighted Graph")
+    axs[1].axis("off")
+
+    fig.suptitle(dataset_name or "Weighted Sample", fontsize=14)
+    return fig
+
+
+def plot_edge_weight_histograms(
+    test_graphs: Sequence[nx.Graph],
+    generated_graphs: Optional[Sequence[nx.Graph]] = None,
+    *,
+    num_edges: int = 9,
+    bins: int = 40,
+    dataset_name: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Plot per-edge weight histograms comparing test graphs to generated graphs.
+
+    Args:
+        test_graphs: Reference graphs (e.g., test split).
+        generated_graphs: Optional generated graphs to compare.
+        num_edges: Number of edges to visualise (chosen by frequency in test set).
+        bins: Number of histogram bins.
+        dataset_name: Optional label for the figure title.
+    """
+    def _collect_edges(graphs):
+        weights = {}
+        for g in graphs:
+            for u, v, data in g.edges(data=True):
+                key = tuple(sorted((int(u), int(v))))
+                w = float(data.get("weight", data.get("interference", 0.0)))
+                weights.setdefault(key, []).append(w)
+        return weights
+
+    test_edges = _collect_edges(test_graphs)
+    if not test_edges:
+        raise ValueError("No edges found in test graphs to plot histograms.")
+
+    edges_sorted = sorted(test_edges.items(), key=lambda kv: len(kv[1]), reverse=True)
+    chosen = edges_sorted[:num_edges]
+
+    gen_edges = _collect_edges(generated_graphs) if generated_graphs else {}
+
+    global_vals = [w for vals in test_edges.values() for w in vals]
+    for vals in gen_edges.values():
+        global_vals.extend(vals)
+    try:
+        global_min = float(np.nanmin(global_vals))
+        global_max = float(np.nanmax(global_vals))
+    except Exception:
+        global_min, global_max = 0.0, 1.0
+    if not np.isfinite(global_min):
+        global_min = 0.0
+    if not np.isfinite(global_max):
+        global_max = 1.0
+    if global_min == global_max:
+        global_max = global_min + 1.0
+
+    n_rows = math.ceil(len(chosen) / 3)
+    n_cols = min(3, len(chosen))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows))
+    axes = np.atleast_1d(axes).flatten()
+
+    for ax, (edge, test_vals) in zip(axes, chosen):
+        gen_vals = gen_edges.get(edge, [])
+        all_vals = (test_vals + gen_vals) if gen_vals else test_vals
+        if not all_vals:
+            continue
+        ax.hist(test_vals, bins=bins, alpha=0.6, label="test", color="#2980b9", density=True, range=(global_min, global_max))
+        if gen_vals:
+            ax.hist(gen_vals, bins=bins, alpha=0.6, label="generated", color="#c0392b", density=True, range=(global_min, global_max))
+        ax.set_xlim(global_min, global_max)
+        ax.set_title(f"Edge {edge}")
+        ax.legend()
+
+    for ax in axes[len(chosen):]:
+        ax.axis("off")
+
+    fig.suptitle(dataset_name or "Edge weight distributions", fontsize=14)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
+    return fig

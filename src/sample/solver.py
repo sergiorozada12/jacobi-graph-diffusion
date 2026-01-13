@@ -29,16 +29,86 @@ class EulerMaruyamaPredictor:
         drift, diffusion = self.rsde.sde(adj, flags, t)
         adj_mean = adj + drift * dt
         adj_new  = adj_mean + diffusion * sqrt_mdt * noise
-        """
-        # Tamed EM
+
+        adj_new  = adj_new.clamp(0.0, 1.0)
+        adj_mean = adj_mean.clamp(0.0, 1.0)
+
+        flags_mask = (flags[:, :, None] * flags[:, None, :]).float()
+
+        adj_new_triu = torch.triu(adj_new, diagonal=1) * flags_mask
+        adj_new = adj_new_triu + adj_new_triu.transpose(-1, -2)
+
+        adj_mean_triu = torch.triu(adj_mean, diagonal=1) * flags_mask
+        adj_mean = adj_mean_triu + adj_mean_triu.transpose(-1, -2)
+
+        assert_symmetric_and_masked(adj_new, flags)
+        assert_symmetric_and_masked(adj_mean, flags)
+        return adj_new, adj_mean
+
+class HeunPredictor:
+    def __init__(self, sde, score_fn):
+        self.sde = sde
+        self.rsde = sde.reverse(score_fn)
+        self.score_fn = score_fn
+
+    @torch.no_grad()
+    def update(self, adj, flags, t, dt):
+        assert_symmetric_and_masked(adj, flags)
+        device, dtype = adj.device, adj.dtype
+
+        dt_tensor = torch.tensor(dt, device=device, dtype=dtype)
         sqrt_mdt = torch.sqrt(torch.tensor(-dt, device=device, dtype=dtype))
-        noise    = gen_noise(adj, flags).to(device=device, dtype=dtype)
-        drift, diffusion = self.rsde.sde(adj, flags, t)
-        #tame_drift = drift / (1.0 - dt)
-        tame_drift = drift / (1.0 - dt * drift.abs())
-        adj_mean = adj + tame_drift * dt
-        adj_new  = adj_mean + diffusion * sqrt_mdt * noise
-        """
+        noise = gen_noise(adj, flags).to(device=device, dtype=dtype)
+        dW = sqrt_mdt * noise
+
+        drift1, diff1 = self.rsde.sde(adj, flags, t)
+        adj_tilde = adj + drift1 * dt_tensor + diff1 * dW
+        adj_tilde = adj_tilde.clamp(0.0, 1.0)
+        adj_tilde_triu = torch.triu(adj_tilde, diagonal=1)
+        adj_tilde = adj_tilde_triu + adj_tilde_triu.transpose(-1, -2)
+        adj_tilde = mask_adjs(adj_tilde, flags)
+
+        drift2, diff2 = self.rsde.sde(adj_tilde, flags, t)
+
+        drift_avg = 0.5 * (drift1 + drift2)
+        diff_avg = 0.5 * (diff1 + diff2)
+        adj_mean = adj + drift_avg * dt_tensor
+        adj_new = adj + drift_avg * dt_tensor + diff_avg * dW
+
+        adj_new  = adj_new.clamp(0.0, 1.0)
+        adj_mean = adj_mean.clamp(0.0, 1.0)
+
+        flags_mask = (flags[:, :, None] * flags[:, None, :]).float()
+
+        adj_new_triu = torch.triu(adj_new, diagonal=1) * flags_mask
+        adj_new = adj_new_triu + adj_new_triu.transpose(-1, -2)
+
+        adj_mean_triu = torch.triu(adj_mean, diagonal=1) * flags_mask
+        adj_mean = adj_mean_triu + adj_mean_triu.transpose(-1, -2)
+
+        assert_symmetric_and_masked(adj_new, flags)
+        assert_symmetric_and_masked(adj_mean, flags)
+        return adj_new, adj_mean
+
+class MilsteinPredictor:
+    def __init__(self, sde, score_fn):
+        self.sde = sde
+        self.rsde = sde.reverse(score_fn)
+        self.score_fn = score_fn
+
+    @torch.no_grad()
+    def update(self, adj, flags, t, dt):
+        assert_symmetric_and_masked(adj, flags)
+        device, dtype = adj.device, adj.dtype
+
+        dt_tensor = torch.tensor(dt, device=device, dtype=dtype)
+        sqrt_mdt = torch.sqrt(torch.tensor(-dt, device=device, dtype=dtype))
+        noise = gen_noise(adj, flags).to(device=device, dtype=dtype)
+        dW = sqrt_mdt * noise
+
+        drift, diffusion, diffusion_grad = self.rsde.sde_with_diffusion_grad(adj, flags, t)
+        adj_mean = adj + drift * dt_tensor
+        adj_new = adj_mean + diffusion * dW + 0.5 * diffusion * diffusion_grad * (dW * dW - dt_tensor)
 
         adj_new  = adj_new.clamp(0.0, 1.0)
         adj_mean = adj_mean.clamp(0.0, 1.0)
@@ -81,7 +151,7 @@ class LangevinCorrector:
             f_norm = masked_norm(score)
             n_norm = masked_norm(noise)
             step_size = 2.0 * (self.snr * n_norm / f_norm).pow(2)  # (B,1)
-            step_size = step_size.clamp(1e-20, 1e-10).view(B, 1, 1)
+            step_size = step_size.view(B, 1, 1)
 
             # Drift + noise
             adj_mean = adj + step_size * score
@@ -116,6 +186,7 @@ class PCSolver:
             eps_score=1e-10,
             eps_score_dist=1e-5,
             use_corrector=False,
+            predictor_type="em",
             time_schedule="log",
             time_schedule_power=2.0,
             use_sampled_features=True,
@@ -147,7 +218,13 @@ class PCSolver:
             direct_model_score=(score_mode == "direct_score"),
         )
 
-        self.predictor = EulerMaruyamaPredictor(sde, jacobi_score)
+        predictor_type = (predictor_type or "em").lower()
+        if predictor_type == "milstein":
+            self.predictor = MilsteinPredictor(sde, jacobi_score)
+        elif predictor_type == "heun":
+            self.predictor = HeunPredictor(sde, jacobi_score)
+        else:
+            self.predictor = EulerMaruyamaPredictor(sde, jacobi_score)
         self.corrector = LangevinCorrector(sde, jacobi_score, snr, scale_eps, n_steps, eps_corrector)
 
     def solve(self, flags):

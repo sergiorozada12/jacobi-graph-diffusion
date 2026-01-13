@@ -189,10 +189,10 @@ class JacobiScore:
         A_0_dist = A_0_dist * flags_mask
 
         if self.sample_target:
-            A_0_triu = torch.bernoulli(torch.triu(A_0_dist, diagonal=1)) # This critical for TREE
+            A_0_triu = torch.bernoulli(torch.triu(A_0_dist, diagonal=1))
             A_0_triu = A_0_triu * flags_mask
         else:
-            A_0_triu = torch.triu(A_0_dist, diagonal=1) # This critical for EGO
+            A_0_triu = torch.triu(A_0_dist, diagonal=1)
         A_0 = A_0_triu + A_0_triu.transpose(-1, -2)
 
         score_raw = self.jacobi_score(A_0, A_t_dist, t).float()

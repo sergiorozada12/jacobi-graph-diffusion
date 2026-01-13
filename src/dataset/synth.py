@@ -68,7 +68,7 @@ class SynthGraphDatasetModule(pl.LightningDataModule):
         all_counts = torch.zeros(max_nodes_possible)
         for loader in [self.train_dataloader(), self.val_dataloader()]:
             for batch in loader:
-                _, adjs = batch
+                adjs = batch[1]
                 for A in adjs:
                     num_nodes = (A.sum(dim=1) != 0).sum().item()
                     all_counts[num_nodes] += 1

@@ -24,6 +24,7 @@ from src.metrics.val import (
     SBMSamplingMetrics,
     SpectreSamplingMetrics,
     TreeSamplingMetrics,
+    WirelessSamplingMetrics,
 )
 from src.parameter_search.persistence import HyperparamStore
 from src.models.transformer_model import GraphTransformer
@@ -35,6 +36,7 @@ class SearchSpace:
     order: Optional[List[int]] = None
     sample_target: Optional[List[bool]] = None
     eps_sde: Optional[List[float]] = None
+    eps_score: Optional[List[float]] = None
     time_schedule: Optional[List[str]] = None
     eps_time: Optional[List[float]] = None
     use_corrector: Optional[List[bool]] = None
@@ -124,6 +126,7 @@ def resolve_metrics_name(dataset_name: str, override: Optional[str]) -> str:
         ("ego", "ego"),
         ("protein", "protein"),
         ("imdb", "imdb"),
+        ("metrofi", "metrofi"),
     ]
     for pattern, alias in mapping:
         if pattern in name:
@@ -141,6 +144,7 @@ def resolve_metrics_class(alias: str) -> Type[SpectreSamplingMetrics]:
         "ego": EgoSamplingMetrics,
         "protein": ProteinSamplingMetrics,
         "imdb": IMDBSamplingMetrics,
+        "metrofi": WirelessSamplingMetrics,
     }
     if alias not in metrics_map:
         raise ValueError(
@@ -206,6 +210,7 @@ def prepare_search_space(cfg, space: SearchSpace):
     orders = space.order or [cfg.sde.order]
     sample_targets = space.sample_target or [cfg.sde.sample_target]
     eps_sde_list = space.eps_sde or [cfg.sde.eps_sde]
+    eps_score_list = space.eps_score or [cfg.sde.eps_score]
     time_schedules = space.time_schedule or [cfg.sde.time_schedule]
     eps_time_list = space.eps_time or [cfg.sampler.eps_time]
     use_correctors = space.use_corrector or [cfg.sampler.use_corrector]
@@ -217,6 +222,7 @@ def prepare_search_space(cfg, space: SearchSpace):
         orders,
         sample_targets,
         eps_sde_list,
+        eps_score_list,
         time_schedules,
         eps_time_list,
         use_correctors,
@@ -230,6 +236,7 @@ def enumerate_trials(
     orders: Iterable[int],
     sample_targets: Iterable[bool],
     eps_sde_list: Iterable[float],
+    eps_score_list: Iterable[float],
     time_schedules: Iterable[str],
     eps_time_list: Iterable[float],
     use_correctors: Iterable[bool],
@@ -237,9 +244,16 @@ def enumerate_trials(
     scale_eps_list: Iterable[float],
     n_steps_list: Iterable[int],
 ) -> List[Dict[str, Any]]:
-    base_space = product(orders, sample_targets, eps_sde_list, time_schedules, eps_time_list)
+    base_space = product(
+        orders,
+        sample_targets,
+        eps_sde_list,
+        eps_score_list,
+        time_schedules,
+        eps_time_list,
+    )
     trials = []
-    for order, sample_target, eps_sde, time_schedule, eps_time in base_space:
+    for order, sample_target, eps_sde, eps_score, time_schedule, eps_time in base_space:
         for use_corrector in use_correctors:
             if use_corrector:
                 for snr, scale_eps, n_steps in product(snr_list, scale_eps_list, n_steps_list):
@@ -248,6 +262,7 @@ def enumerate_trials(
                             "order": order,
                             "sample_target": sample_target,
                             "eps_sde": eps_sde,
+                            "eps_score": eps_score,
                             "time_schedule": time_schedule,
                             "eps_time": eps_time,
                             "use_corrector": True,
@@ -262,6 +277,7 @@ def enumerate_trials(
                         "order": order,
                         "sample_target": sample_target,
                         "eps_sde": eps_sde,
+                        "eps_score": eps_score,
                         "time_schedule": time_schedule,
                         "eps_time": eps_time,
                         "use_corrector": False,
@@ -274,6 +290,7 @@ def configure_trial(cfg, params: Dict[str, Any]):
     cfg.sde.order = params["order"]
     cfg.sde.sample_target = params["sample_target"]
     cfg.sde.eps_sde = params["eps_sde"]
+    cfg.sde.eps_score = params["eps_score"]
     cfg.sde.time_schedule = params["time_schedule"]
     cfg.sampler.eps_time = params["eps_time"]
     cfg.sampler.use_corrector = params["use_corrector"]
@@ -378,7 +395,11 @@ def run_tuning(base_cfg, settings: TuningSettings):
 
     pl.seed_everything(cfg.general.seed, workers=True)
 
-    datamodule = SpectreDatasetModule(cfg)
+    if "metrofi" in cfg.data.data.lower():
+        from src.dataset.wireless import WirelessDatasetModule
+        datamodule = WirelessDatasetModule(cfg)
+    else:
+        datamodule = SpectreDatasetModule(cfg)
     with maybe_silence(settings.suppress_external_output and not settings.verbose):
         datamodule.setup()
 

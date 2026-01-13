@@ -22,13 +22,19 @@ def compute_reference_metrics(datamodule, sampling_metrics):
 
     if os.path.exists(metrics_path):
         print(f"Loading cached sampling metrics from {metrics_path}.")
-        return torch.load(metrics_path, map_location="cpu")
+        ref_metrics = torch.load(metrics_path, map_location="cpu")
+        print(f"Reference metrics loaded: keys={list(ref_metrics.keys())}")
+        for split, metrics in ref_metrics.items():
+            if metrics is None:
+                continue
+            print(f"  {split}: " + ", ".join(f"{k}={v:.4g}" if isinstance(v, (int, float)) else f"{k}" for k, v in metrics.items()))
+        return ref_metrics
 
     print("Computing sampling metrics.")
     training_graphs = []
     print("Converting training dataset to format required by sampling metrics.")
     for data_batch in datamodule.train_dataloader():
-        _, A = data_batch
+        A = data_batch[1]
         G = adjs_to_graphs(A, is_cuda=True)
         training_graphs.extend(G)
 
@@ -58,6 +64,12 @@ def compute_reference_metrics(datamodule, sampling_metrics):
         'val': val_ref_metrics,
         'test': test_ref_metrics
     }
+
+    print("Computed reference metrics:")
+    for split, metrics in ref_metrics.items():
+        if metrics is None:
+            continue
+        print(f"  {split}: " + ", ".join(f"{k}={v:.4g}" if isinstance(v, (int, float)) else f"{k}" for k, v in metrics.items()))
 
     torch.save(ref_metrics, metrics_path)
     print(f"Saved sampling metrics to {metrics_path}.")

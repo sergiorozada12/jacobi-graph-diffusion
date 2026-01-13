@@ -12,19 +12,20 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 0.001
+    eps_time: float = 1e-06
     snr: float = 0.1
     scale_eps: float = 0.1
     n_steps: int = 5
     num_nodes: int = 20
-    test_graphs: int = 16
+    test_graphs: int = 100
     use_corrector: bool = False
+    predictor: str = "heun"  # "em" or "milstein" or "heun"
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "tree_baseline"
-    batch_size: int = 16 # 32
+    batch_size: int = 100 # 32
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -74,12 +75,11 @@ class TrainConfig:
     amsgrad: bool = True
     weight_decay: float = 1e-12
     eps: float = 1e-4
-    num_epochs: int = 5_000
+    num_epochs: int = 10_000
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
-    training_mode: str = "graph"  # options: "graph", "direct_score"
-    score_loss_weight: float = 1.0
+    training_mode: str = "graph"  # options: "graph", "weighted", "direct_score"
 
 @dataclass
 class SDEConfig:

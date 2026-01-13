@@ -4,7 +4,7 @@ import torch
 from src.sde.sde import JacobiSDE
 from src.sample.solver import PCSolver
 from src.utils import quantize, adjs_to_graphs
-from src.visualization.plots import plot_graph_grid
+from src.visualization.plots import plot_graph_grid, plot_weighted_adj_and_graph
 
 
 class Sampler:
@@ -54,6 +54,7 @@ class Sampler:
             eps_score=self.cfg.sde.eps_score,
             eps_score_dist=self.cfg.sde.eps_score_dist,
             use_corrector=self.cfg.sampler.use_corrector,
+            predictor_type=getattr(self.cfg.sampler, "predictor", "em"),
             time_schedule=self.cfg.sde.time_schedule,
             time_schedule_power=self.cfg.sde.time_schedule_power,
             use_sampled_features=self.use_sampled_features,
@@ -66,7 +67,7 @@ class Sampler:
         self.solver.predictor.score_fn.model = self.model
         self.solver.corrector.score_fn.model = self.model
 
-    def _make_flags(self):
+    def _make_flags(self, use_node_dist: bool = True):
         flags = torch.zeros(
             self.cfg.data.batch_size,
             self.max_num_nodes,
@@ -74,7 +75,7 @@ class Sampler:
             device=self.device
         )
 
-        if self.node_dist:
+        if use_node_dist and self.node_dist:
             num_nodes = self.node_dist.sample_n(self.cfg.data.batch_size, self.device)
             for i, n in enumerate(num_nodes):
                 flags[i, :n] = 1
@@ -100,18 +101,52 @@ class Sampler:
             dataset_name=self.cfg.data.data,
         )
 
-    def sample(self):
+    def sample(
+        self,
+        keep_isolates: bool = False,
+        return_adjs: bool = False,
+        *,
+        use_node_dist: bool = True,
+        nodelist=None,
+        keep_zero_weights: bool = False,
+    ):
         num_rounds = math.ceil(self.cfg.sampler.test_graphs / self.cfg.data.batch_size)
         generated = []
+        first_adj = None
+        first_flags = None
+        collected_adjs = []
         for _ in range(num_rounds):
         # for _ in range(1):
-            flags = self._make_flags()
+            flags = self._make_flags(use_node_dist=use_node_dist)
             adj, _ = self.solver.solve(flags)
-            samples = quantize(adj)
-            graphs = adjs_to_graphs(samples, is_cuda=self.device.type != 'cpu')
+            if self.score_mode == "weighted":
+                samples = adj.clamp(0.0, 1.0)
+            else:
+                samples = quantize(adj)
+            collected_adjs.append(samples.detach().cpu())
+            if first_adj is None:
+                first_adj = samples[0].detach().cpu()
+                first_flags = flags[0].detach().cpu()
+            graphs = adjs_to_graphs(
+                samples,
+                is_cuda=self.device.type != 'cpu',
+                keep_isolates=keep_isolates,
+                nodelist=nodelist,
+                keep_zero_weights=keep_zero_weights,
+            )
             generated.extend(graphs)
             #for graph in graphs:
             #    largest_cc = max(nx.connected_components(graph), key=len)
             #    generated.append(graph.subgraph(largest_cc).copy())
-        fig = self.plot_sampled_graphs(generated)
+        if self.score_mode == "weighted" and first_adj is not None:
+            fig = plot_weighted_adj_and_graph(
+                first_adj,
+                flags=first_flags,
+                dataset_name=self.cfg.data.data,
+            )
+        else:
+            fig = self.plot_sampled_graphs(generated)
+        if return_adjs:
+            adjs_stacked = torch.cat(collected_adjs, dim=0)
+            return generated, fig, adjs_stacked
         return generated, fig

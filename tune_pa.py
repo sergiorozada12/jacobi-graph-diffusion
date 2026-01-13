@@ -1,7 +1,7 @@
 import argparse
 from omegaconf import OmegaConf
-# from configs.config_tree import MainConfig
-from configs.config_tree_graphon import MainConfig
+
+from configs.config_pa import MainConfig
 from src.parameter_search.tuning import SearchSpace, TuningSettings, run_tuning
 
 
@@ -28,27 +28,28 @@ def main():
     if getattr(cfg.train, "training_mode", "graph") == "direct_score":
         cfg.model.output_dims = dict(cfg.model.score_output_dims)
     
-# Parameters: {'order': 100, 'sample_target': True, 'eps_sde': 1e-07, 'time_schedule': 'log', 'eps_time': 1e-06, 'use_corrector': True, 'snr': 0.0001, 'scale_eps': 0.001, 'n_steps': 1}
     search_space = SearchSpace(
         order=[100],
         sample_target=[True],
-        eps_sde=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
-        eps_score=[1e-10],
+        eps_sde=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8],
+        eps_score=[1e-8, 1e-9, 1e-10],
+        #eps_sde=[0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001, 0.0000001],
         time_schedule=["log"],
-        eps_time=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
+        # eps_time=[0.00001, 0.000001, 0.0000001, 0.00000001],
+        eps_time=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8],
         use_corrector=[False],
-        snr=[0.001, 0.0001, 0.00001],
-        scale_eps=[0.01, 0.001, 0.0001, 0.00001],
-        n_steps=[1, 2],
+        snr=[2.0, 1.0, 0.1, 0.01, 0.001, 0.0001],
+        scale_eps=[2.0, 1.0, 0.1, 0.01, 0.001, 0.0001],
+        n_steps=[1, 2, 5],
     )
 
     settings = TuningSettings(
-        objective="tree_acc",
+        objective="pa_acc",
         metric_key=None,
         metrics_alias=None,
         max_trials=None,
         seed=None,
-        device='cuda:1',
+        device='cuda:0',
         num_graphs=None,
         results_path=None,
         verbose=True,
