@@ -18,6 +18,7 @@ class SamplerConfig:
     n_steps: int = 1
     num_nodes: int = 40
     test_graphs: int = 100
+    predictor: str = "em"  # "em" or "milstein"
 
 @dataclass
 class DataConfig:
@@ -35,6 +36,7 @@ class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
+    use_sampled_features: bool = False
     n_layers: int = 8
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
@@ -60,6 +62,11 @@ class ModelConfig:
         "E": 2,
         "y": 0,
     })
+    score_output_dims: dict = field(default_factory=lambda: {
+        "X": 0,
+        "E": 1,
+        "y": 0,
+    })
 
 @dataclass
 class TrainConfig:
@@ -69,6 +76,9 @@ class TrainConfig:
     eps: float = 1e-5
     num_epochs: int = 5_000
     lambda_train: float = 5.0
+    use_ema: bool = False
+    ema_decay: float = 0.999
+    training_mode: str = "graph"  # options: "graph", "weighted", "direct_score"
 
 @dataclass
 class SDEConfig:
@@ -77,6 +87,8 @@ class SDEConfig:
     num_scales: int = 1000
     speed: float = 1.5
     order: int = 10
+    time_schedule: str = "linear"
+    time_schedule_power: float = 2.0
 
 @dataclass
 class MainConfig:

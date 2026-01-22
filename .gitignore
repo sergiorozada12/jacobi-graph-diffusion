@@ -7,6 +7,7 @@ checkpoints/
 wandb/
 samples/
 eval/
+hyperparams/
 test*
 nohup*
 

@@ -7,20 +7,25 @@ import scipy as sp
 
 NUM_GRAPHS = 500
 PLANAR_SIZE_RANGE = (10, 20)
-TREE_SIZE_RANGE = (10, 20)
+TREE_SIZE_RANGE = (20, 80)
 SBM_COMMS_RANGE = (2, 2)
-SBM_COMMS_SIZE = (10, 20)
+SBM_COMMS_SIZE = (20, 40)
 EGO_NUM_EGOS_RANGE = (2, 4)
 EGO_SIZE_RANGE = (5, 10)
 EGO_INTERCONNECT_PROB = 0.01
 EGO_INTRACONNECT_PROB = 0.005
+PA_SIZE_RANGE = (20, 60)
+PA_ATTACH = 3
 SEED = 0
+VAL_RATIO = 0.1
+TEST_RATIO = 0.2
 BASE_PATH = "data/"
 PATHS = {
-    "planar": os.path.join(BASE_PATH, "planar.pkl"),
-    "tree": os.path.join(BASE_PATH, "tree.pkl"),
-    "sbm": os.path.join(BASE_PATH, "sbm.pkl"),
-    "ego": os.path.join(BASE_PATH, "ego.pkl"),
+    "planar": os.path.join(BASE_PATH, "planar_graphon.pkl"),
+    "tree": os.path.join(BASE_PATH, "tree_graphon.pkl"),
+    "sbm": os.path.join(BASE_PATH, "sbm_2comms_graphon.pkl"),
+    "ego": os.path.join(BASE_PATH, "ego_graphon.pkl"),
+    "pa": os.path.join(BASE_PATH, "pa_graphon.pkl"),
 }
 
 
@@ -136,6 +141,40 @@ def generate_ego_graphs(num_graphs, num_egos_range, ego_size_range, interconnect
 
     return graphs
 
+
+def generate_pa_graphs(num_graphs, size_range, attach, seed):
+    rng = np.random.default_rng(seed)
+    graphs = []
+    for _ in range(num_graphs):
+        n_nodes = int(rng.integers(size_range[0], size_range[1] + 1))
+        m_attach = int(np.clip(attach, 1, n_nodes - 1))
+        G = nx.barabasi_albert_graph(n_nodes, m_attach, seed=int(rng.integers(0, 10_000)))
+        graphs.append(G)
+    return graphs
+
+def split_graphs(graphs, val_ratio, test_ratio, seed):
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(len(graphs))
+    shuffled = [graphs[i] for i in indices]
+
+    n_total = len(shuffled)
+    n_test = max(1, int(n_total * test_ratio)) if test_ratio > 0 else 0
+    n_val = max(1, int(n_total * val_ratio)) if val_ratio > 0 else 0
+    if n_test + n_val >= n_total:
+        # Fall back to keeping at least one training graph
+        n_test = max(0, min(n_test, n_total - 1))
+        n_val = max(0, min(n_val, n_total - 1 - n_test))
+
+    train_end = n_total - (n_val + n_test)
+    val_end = train_end + n_val
+
+    return {
+        "train": shuffled[:train_end],
+        "val": shuffled[train_end:val_end],
+        "test": shuffled[val_end:],
+    }
+
+
 def save_graphs(graphs, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
@@ -147,8 +186,16 @@ if __name__ == "__main__":
     tree_graphs = generate_tree_graphs(NUM_GRAPHS, *TREE_SIZE_RANGE, seed=SEED + 1)
     sbm_graphs = generate_sbm_graphs(NUM_GRAPHS, *SBM_COMMS_RANGE, *SBM_COMMS_SIZE, seed=SEED + 2)
     ego_graphs = generate_ego_graphs(NUM_GRAPHS, EGO_NUM_EGOS_RANGE, EGO_SIZE_RANGE, EGO_INTERCONNECT_PROB, EGO_INTRACONNECT_PROB, seed=SEED)
+    pa_graphs = generate_pa_graphs(NUM_GRAPHS, PA_SIZE_RANGE, PA_ATTACH, seed=SEED + 3)
 
-    save_graphs(planar_graphs, PATHS["planar"])
-    save_graphs(tree_graphs, PATHS["tree"])
-    save_graphs(sbm_graphs, PATHS["sbm"])
-    save_graphs(ego_graphs, PATHS["ego"])
+    planar_dataset = split_graphs(planar_graphs, VAL_RATIO, TEST_RATIO, seed=SEED)
+    tree_dataset = split_graphs(tree_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 1)
+    sbm_dataset = split_graphs(sbm_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 2)
+    ego_dataset = split_graphs(ego_graphs, VAL_RATIO, TEST_RATIO, seed=SEED)
+    pa_dataset = split_graphs(pa_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 3)
+
+    #save_graphs(planar_dataset, PATHS["planar"])
+    save_graphs(tree_dataset, PATHS["tree"])
+    #save_graphs(sbm_dataset, PATHS["sbm"])
+    #save_graphs(ego_dataset, PATHS["ego"])
+    #save_graphs(pa_dataset, PATHS["pa"])

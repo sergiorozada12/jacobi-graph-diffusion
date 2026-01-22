@@ -4,11 +4,12 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+import networkx as nx
 
 from src.utils import graph_list_to_dataset
 
 
-class SynthGraphDatasetModule(pl.LightningDataModule):
+class SpectreDatasetModule(pl.LightningDataModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -22,19 +23,11 @@ class SynthGraphDatasetModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         with open(self.data_path, "rb") as f:
-            graph_list = pickle.load(f)
+            dataset = pickle.load(f)
 
-        np.random.seed(self.config.general.seed)
-        np.random.shuffle(graph_list)
-
-        n_total = len(graph_list)
-        n_test = int(n_total * self.test_split)
-        n_val = int(n_total * self.val_split)
-        n_train = n_total - n_test - n_val
-
-        self.train_graphs = graph_list[:n_train]
-        self.val_graphs = graph_list[n_train:n_train + n_val]
-        self.test_graphs = graph_list[n_train + n_val:]
+        self.train_graphs = dataset["train"]
+        self.val_graphs = dataset["val"]
+        self.test_graphs = dataset["test"]
 
         self.train_ds = graph_list_to_dataset(
             self.train_graphs,
