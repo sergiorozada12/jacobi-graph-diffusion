@@ -21,7 +21,7 @@ class SamplerConfig:
     num_nodes: int = 20
     test_graphs: int = 100
     use_corrector: bool = False
-    predictor: str = "milstein"  # "em" or "milstein" or "heun"
+    predictor: str = "em"  # "em" or "milstein" or "heun"
 
 
 @dataclass

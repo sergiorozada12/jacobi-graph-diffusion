@@ -48,7 +48,7 @@ def main():
         metrics_alias=None,
         max_trials=None,
         seed=None,
-        device='cuda:1',
+        device='cuda:0',
         num_graphs=None,
         results_path=None,
         verbose=True,
