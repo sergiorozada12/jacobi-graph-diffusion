@@ -181,7 +181,7 @@ def plot_graph_snapshots(
         ax.axis("off")
         nx.draw_networkx(graph, pos=pos, with_labels=False, node_size=node_size, width=edge_width, ax=ax)
 
-    for ax in axes[len(trimmed) :]:
+    for ax in axes[len(trimmed):]:
         ax.axis("off")
 
     fig.tight_layout()
@@ -210,7 +210,7 @@ def plot_heatmap_snapshots(
         ax.imshow(adj, vmin=vmin, vmax=vmax, cmap=cmap)
         ax.axis("off")
 
-    for ax in axes[len(trimmed) :]:
+    for ax in axes[len(trimmed):]:
         ax.axis("off")
 
     fig.tight_layout()
@@ -218,6 +218,8 @@ def plot_heatmap_snapshots(
 
 
 def save_figure(fig: plt.Figure, path: Union[str, PathLike[str]], *, dpi: int = 300, close: bool = True) -> None:
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=dpi)
     if close:
         plt.close(fig)
