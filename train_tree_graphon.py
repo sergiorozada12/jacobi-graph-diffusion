@@ -68,7 +68,7 @@ def main():
 
     trainer = Trainer(
         accelerator=cfg.general.device,
-        devices=[1],
+        devices="auto",
         strategy="ddp_find_unused_parameters_true",
         max_epochs=cfg.train.num_epochs,
         check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
