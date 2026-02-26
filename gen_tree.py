@@ -1,6 +1,7 @@
 import argparse
 from omegaconf import OmegaConf
 from pathlib import Path
+from typing import Any, Dict
 import torch
 import pytorch_lightning as pl
 
@@ -28,7 +29,34 @@ def parse_args():
         default=None,
         help="Maximum number of nodes to sample. Requires --min-nodes. Defaults to dataset distribution.",
     )
+    parser.add_argument(
+        "--ckpt-path",
+        type=str,
+        default=None,
+        help="Optional checkpoint path to force (supports Lightning .ckpt and plain .pth).",
+    )
+    parser.add_argument(
+        "--no-ema",
+        action="store_true",
+        help="Disable EMA when loading checkpoints (use raw model weights).",
+    )
     return parser.parse_args()
+
+
+def _load_graph_transformer_state_dict(raw_ckpt: Dict[str, Any], use_ema: bool) -> Dict[str, Any]:
+    # Lightning checkpoints often store params in `state_dict` prefixed by `model.`/`ema_model.`
+    if "state_dict" in raw_ckpt and isinstance(raw_ckpt["state_dict"], dict):
+        pl_state = raw_ckpt["state_dict"]
+        model_state = {k[len("model."):]: v for k, v in pl_state.items() if k.startswith("model.")}
+        ema_state = {k[len("ema_model."):]: v for k, v in pl_state.items() if k.startswith("ema_model.")}
+
+        if use_ema and ema_state:
+            return ema_state
+        if model_state:
+            return model_state
+        return pl_state
+
+    return raw_ckpt
 
 
 def build_node_distribution(cfg, datamodule, min_nodes=None, max_nodes=None):
@@ -69,6 +97,8 @@ def main():
     cfg = OmegaConf.structured(MainConfig())
     if getattr(cfg.train, "training_mode", "graph") == "direct_score":
         cfg.model.output_dims = dict(cfg.model.score_output_dims)
+    if args.no_ema:
+        cfg.train.use_ema = False
 
     if args.min_nodes is not None or args.max_nodes is not None:
         if args.min_nodes is None or args.max_nodes is None:
@@ -104,19 +134,26 @@ def main():
         act_fn_in=torch.nn.ReLU(),
         act_fn_out=torch.nn.ReLU(),
     )
-    ckpt_dir = Path("checkpoints") / cfg.data.data
-    ema_path = ckpt_dir / "weights_ema.pth"
-    weights_path = ckpt_dir / "weights.pth"
-    if cfg.train.use_ema and ema_path.exists():
-        weight_path = ema_path
-    elif weights_path.exists():
-        weight_path = weights_path
+    if args.ckpt_path is not None:
+        weight_path = Path(args.ckpt_path)
+        if not weight_path.exists():
+            raise FileNotFoundError(f"Provided checkpoint path does not exist: {weight_path}")
     else:
-        raise FileNotFoundError(
-            f"Could not find checkpoint for '{cfg.data.data}'. "
-            f"Looked for {ema_path} and {weights_path}."
-        )
-    state_dict = torch.load(weight_path, map_location="cpu")
+        ckpt_dir = Path("checkpoints") / cfg.data.data
+        ema_path = ckpt_dir / "weights_ema.pth"
+        weights_path = ckpt_dir / "weights.pth"
+        if cfg.train.use_ema and ema_path.exists():
+            weight_path = ema_path
+        elif weights_path.exists():
+            weight_path = weights_path
+        else:
+            raise FileNotFoundError(
+                f"Could not find checkpoint for '{cfg.data.data}'. "
+                f"Looked for {ema_path} and {weights_path}."
+            )
+
+    raw_ckpt = torch.load(weight_path, map_location="cpu")
+    state_dict = _load_graph_transformer_state_dict(raw_ckpt, use_ema=cfg.train.use_ema) if isinstance(raw_ckpt, dict) else raw_ckpt
     model.load_state_dict(state_dict)
     model = model.to(cfg.general.device)
     model.eval()
