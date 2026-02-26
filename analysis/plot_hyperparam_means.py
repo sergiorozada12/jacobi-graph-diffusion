@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory where plots are saved (default: analysis/<json_stem>_mean_std_plots).",
+        help="Directory where plots are saved (default: analysis/results/<json_stem>_mean_std_plots).",
     )
     return parser.parse_args()
 
@@ -281,7 +281,7 @@ def main() -> None:
     output_dir = args.output_dir
     if output_dir is None:
         analysis_dir = Path(__file__).resolve().parent
-        output_dir = analysis_dir / f"{json_path.stem}_mean_std_plots"
+        output_dir = analysis_dir / "results" / f"{json_path.stem}_mean_std_plots"
     else:
         output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
