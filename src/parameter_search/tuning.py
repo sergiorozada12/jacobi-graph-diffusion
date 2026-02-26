@@ -59,6 +59,7 @@ class TuningSettings:
     num_graphs: Optional[int] = None
     ckpt_path: Optional[Union[str, Path]] = None
     results_path: Optional[Union[str, Path]] = None
+    store_name: Optional[str] = None
     verbose: bool = True
     suppress_external_output: bool = False
     search_space: SearchSpace = field(default_factory=SearchSpace)
@@ -493,7 +494,9 @@ def run_tuning(base_cfg, settings: TuningSettings):
 
     minimize_objective = settings.objective == "average_ratio"
     objective_mode = "min" if minimize_objective else "max"
-    if settings.min_nodes is not None and settings.max_nodes is not None:
+    if settings.store_name:
+        dataset_id = settings.store_name
+    elif settings.min_nodes is not None and settings.max_nodes is not None:
         dataset_id = f"{cfg.data.data}_nodes_{settings.min_nodes}_{settings.max_nodes}"
     else:
         dataset_id = cfg.data.data

@@ -25,6 +25,12 @@ def parse_args():
         default=None,
         help="Optional checkpoint path to force during tuning (supports Lightning .ckpt and plain .pth).",
     )
+    parser.add_argument(
+        "--store-name",
+        type=str,
+        default=None,
+        help="Optional hyperparameter store name (writes to hyperparams/<store-name>.json).",
+    )
     return parser.parse_args()
 
 
@@ -68,6 +74,7 @@ def main():
         num_graphs=None,
         ckpt_path=args.ckpt_path,
         results_path=None,
+        store_name=args.store_name,
         verbose=True,
         suppress_external_output=True,
         search_space=search_space,
