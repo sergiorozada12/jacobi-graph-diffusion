@@ -196,6 +196,6 @@ if __name__ == "__main__":
 
     #save_graphs(planar_dataset, PATHS["planar"])
     save_graphs(tree_dataset, PATHS["tree"])
-    #save_graphs(sbm_dataset, PATHS["sbm"])
+    save_graphs(sbm_dataset, PATHS["sbm"])
     #save_graphs(ego_dataset, PATHS["ego"])
     #save_graphs(pa_dataset, PATHS["pa"])
