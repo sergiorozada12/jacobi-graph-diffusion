@@ -624,7 +624,7 @@ def eval_tree_structure_metrics(G_list):
             "forest_acc": 0.0,
             "connected_acc": 0.0,
             "mean_num_components": 0.0,
-            "mean_lcc_ratio": 0.0,
+            "mean_lcc_fraction": 0.0,
         }
 
     tree_count = 0
@@ -661,7 +661,7 @@ def eval_tree_structure_metrics(G_list):
         "forest_acc": forest_count / denom,
         "connected_acc": connected_count / denom,
         "mean_num_components": num_components_sum / denom,
-        "mean_lcc_ratio": lcc_ratio_sum / denom,
+        "mean_lcc_fraction": lcc_ratio_sum / denom,
     }
 
 
