@@ -617,6 +617,53 @@ def eval_acc_tree_graph(G_list):
             count += 1
     return count / float(len(G_list))
 
+def eval_tree_structure_metrics(G_list):
+    if len(G_list) == 0:
+        return {
+            "tree_acc": 0.0,
+            "forest_acc": 0.0,
+            "connected_acc": 0.0,
+            "mean_num_components": 0.0,
+            "mean_lcc_ratio": 0.0,
+        }
+
+    tree_count = 0
+    forest_count = 0
+    connected_count = 0
+    num_components_sum = 0.0
+    lcc_ratio_sum = 0.0
+
+    for gg in G_list:
+        n_nodes = gg.number_of_nodes()
+        if nx.is_tree(gg):
+            tree_count += 1
+        if nx.is_forest(gg):
+            forest_count += 1
+
+        if n_nodes > 0:
+            if nx.is_connected(gg):
+                connected_count += 1
+                num_components_sum += 1.0
+                lcc_ratio_sum += 1.0
+            else:
+                components = list(nx.connected_components(gg))
+                n_components = len(components)
+                num_components_sum += float(n_components)
+                largest_cc_size = max((len(c) for c in components), default=0)
+                lcc_ratio_sum += largest_cc_size / float(n_nodes)
+        else:
+            num_components_sum += 0.0
+            lcc_ratio_sum += 0.0
+
+    denom = float(len(G_list))
+    return {
+        "tree_acc": tree_count / denom,
+        "forest_acc": forest_count / denom,
+        "connected_acc": connected_count / denom,
+        "mean_num_components": num_components_sum / denom,
+        "mean_lcc_ratio": lcc_ratio_sum / denom,
+    }
+
 
 def eval_acc_grid_graph(G_list, grid_start=10, grid_end=20):
     count = 0
@@ -1089,10 +1136,11 @@ class SpectreSamplingMetrics(nn.Module):
         if "tree" in self.metrics_list:
             if local_rank == 0:
                 print("Computing tree accuracy...")
-            tree_acc = eval_acc_tree_graph(networkx_graphs)
-            to_log["tree_acc"] = tree_acc
+            tree_metrics = eval_tree_structure_metrics(networkx_graphs)
+            to_log.update(tree_metrics)
             if wandb.run:
-                wandb.run.summary["tree_acc"] = tree_acc
+                for key, value in tree_metrics.items():
+                    wandb.run.summary[key] = value
 
         if (
             "sbm" in self.metrics_list
