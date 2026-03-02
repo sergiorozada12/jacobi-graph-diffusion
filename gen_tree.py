@@ -40,6 +40,42 @@ def parse_args():
         action="store_true",
         help="Disable EMA when loading checkpoints (use raw model weights).",
     )
+    parser.add_argument("--order", type=int, default=None, help="Override cfg.sde.order.")
+    parser.add_argument(
+        "--sample-target",
+        type=str,
+        choices=("true", "false"),
+        default=None,
+        help="Override cfg.sde.sample_target.",
+    )
+    parser.add_argument("--num-scales", type=int, default=None, help="Override cfg.sde.num_scales.")
+    parser.add_argument("--eps-sde", type=float, default=None, help="Override cfg.sde.eps_sde.")
+    parser.add_argument("--eps-score", type=float, default=None, help="Override cfg.sde.eps_score.")
+    parser.add_argument("--time-schedule", type=str, default=None, help="Override cfg.sde.time_schedule.")
+    parser.add_argument(
+        "--time-schedule-power",
+        type=float,
+        default=None,
+        help="Override cfg.sde.time_schedule_power.",
+    )
+    parser.add_argument("--eps-time", type=float, default=None, help="Override cfg.sampler.eps_time.")
+    parser.add_argument(
+        "--predictor",
+        type=str,
+        choices=("em", "heun", "milstein"),
+        default=None,
+        help="Override cfg.sampler.predictor.",
+    )
+    parser.add_argument(
+        "--use-corrector",
+        type=str,
+        choices=("true", "false"),
+        default=None,
+        help="Override cfg.sampler.use_corrector.",
+    )
+    parser.add_argument("--snr", type=float, default=None, help="Override cfg.sampler.snr.")
+    parser.add_argument("--scale-eps", type=float, default=None, help="Override cfg.sampler.scale_eps.")
+    parser.add_argument("--n-steps", type=int, default=None, help="Override cfg.sampler.n_steps.")
     return parser.parse_args()
 
 
@@ -99,6 +135,32 @@ def main():
         cfg.model.output_dims = dict(cfg.model.score_output_dims)
     if args.no_ema:
         cfg.train.use_ema = False
+    if args.order is not None:
+        cfg.sde.order = args.order
+    if args.sample_target is not None:
+        cfg.sde.sample_target = args.sample_target.lower() == "true"
+    if args.num_scales is not None:
+        cfg.sde.num_scales = args.num_scales
+    if args.eps_sde is not None:
+        cfg.sde.eps_sde = args.eps_sde
+    if args.eps_score is not None:
+        cfg.sde.eps_score = args.eps_score
+    if args.time_schedule is not None:
+        cfg.sde.time_schedule = args.time_schedule
+    if args.time_schedule_power is not None:
+        cfg.sde.time_schedule_power = args.time_schedule_power
+    if args.eps_time is not None:
+        cfg.sampler.eps_time = args.eps_time
+    if args.predictor is not None:
+        cfg.sampler.predictor = args.predictor
+    if args.use_corrector is not None:
+        cfg.sampler.use_corrector = args.use_corrector.lower() == "true"
+    if args.snr is not None:
+        cfg.sampler.snr = args.snr
+    if args.scale_eps is not None:
+        cfg.sampler.scale_eps = args.scale_eps
+    if args.n_steps is not None:
+        cfg.sampler.n_steps = args.n_steps
 
     if args.min_nodes is not None or args.max_nodes is not None:
         if args.min_nodes is None or args.max_nodes is None:
