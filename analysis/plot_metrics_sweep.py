@@ -35,6 +35,15 @@ DATASET_CONFIG = {
     },
 }
 
+RUN_TAG_STYLE = {
+    "base": {"linestyle": "-", "marker": "o", "markersize": 4.5, "mix_alpha": 0.0},
+    "opt-hp": {"linestyle": "--", "marker": "*", "markersize": 8.0, "mix_alpha": 0.20},
+    "opt-sergio": {"linestyle": ":", "marker": "D", "markersize": 5.5, "mix_alpha": 0.45},
+}
+
+FALLBACK_LINESTYLES = ("--", "-.", ":")
+FALLBACK_MARKERS = ("s", "^", "v", "P", "X")
+
 
 def epoch_label(epoch: int) -> str:
     return f"{epoch // 1000}k" if epoch % 1000 == 0 else str(epoch)
@@ -111,6 +120,18 @@ def build_epoch_color_map(by_variant: dict):
     return color_map
 
 
+def resolve_variant_style(run_tag: str):
+    if run_tag in RUN_TAG_STYLE:
+        return RUN_TAG_STYLE[run_tag]
+    idx = abs(hash(run_tag))
+    return {
+        "linestyle": FALLBACK_LINESTYLES[idx % len(FALLBACK_LINESTYLES)],
+        "marker": FALLBACK_MARKERS[idx % len(FALLBACK_MARKERS)],
+        "markersize": 6.0,
+        "mix_alpha": 0.35,
+    }
+
+
 def plot_all_metrics(by_variant: dict, out_path: Path, cfg: dict):
     metric_keys = cfg["plot_metrics"]
     bounded = set(cfg["bounded_metrics"])
@@ -131,11 +152,12 @@ def plot_all_metrics(by_variant: dict, out_path: Path, cfg: dict):
             x = [r["n"] for r in rows]
             y = [r[metric_key] for r in rows]
             label = f"{epoch_label(epoch)} ({run_tag})" if run_tag != "base" else epoch_label(epoch)
-            linestyle = "--" if run_tag != "base" else "-"
-            marker = "*" if run_tag != "base" else "o"
-            markersize = 8.0 if run_tag != "base" else 4.5
+            style = resolve_variant_style(run_tag)
+            linestyle = style["linestyle"]
+            marker = style["marker"]
+            markersize = style["markersize"]
             base_color = epoch_colors[epoch]
-            color = _mix_with_white(base_color, 0.30) if run_tag != "base" else base_color
+            color = _mix_with_white(base_color, style["mix_alpha"])
             ax.plot(
                 x,
                 y,
