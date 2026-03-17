@@ -699,6 +699,7 @@ def eval_acc_sbm_graph(
     p_inter=0.005,
     strict=True,
     refinement_steps=100,
+    seed=0,
     is_parallel=True,
 ):
     count = 0.0
@@ -711,6 +712,7 @@ def eval_acc_sbm_graph(
                 [p_inter for i in range(len(G_list))],
                 [strict for i in range(len(G_list))],
                 [refinement_steps for i in range(len(G_list))],
+                [seed for i in range(len(G_list))],
             ):
                 count += prob
     else:
@@ -721,6 +723,7 @@ def eval_acc_sbm_graph(
                 p_inter=p_inter,
                 strict=strict,
                 refinement_steps=refinement_steps,
+                seed=seed,
             )
     return count / float(len(G_list))
 
@@ -807,7 +810,7 @@ def is_grid_graph(G):
         return False
 
 
-def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=100):
+def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=100, seed=0):
     """
     Check if how closely given graph matches a SBM with given probabilites by computing mean probability of Wald test statistic for each recovered parameter
     """
@@ -816,6 +819,7 @@ def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=10
     idx = adj.nonzero()
     g = gt.Graph()
     g.add_edge_list(np.transpose(idx))
+    gt.seed_rng(seed)
     try:
         state = gt.minimize_blockmodel_dl(g)
     except ValueError:
@@ -1137,7 +1141,7 @@ class SpectreSamplingMetrics(nn.Module):
             if local_rank == 0:
                 print("Computing accuracy...")
             sbm_acc = eval_acc_sbm_graph(
-                networkx_graphs, refinement_steps=100, strict=True
+                networkx_graphs, refinement_steps=100, strict=True, is_parallel=True
             )
             to_log["sbm_acc"] = sbm_acc
             if wandb.run:
