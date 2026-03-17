@@ -1033,6 +1033,7 @@ class SpectreSamplingMetrics(nn.Module):
         self,
         generated_graphs: list,
         ref_metrics,
+        extra_ref_metrics=None,
         local_rank=0,
         test=False,
     ):
@@ -1214,6 +1215,14 @@ class SpectreSamplingMetrics(nn.Module):
             metrics_keys=["degree", "clustering", "orbit", "spectre", "wavelet"],
         )
         to_log.update(ratios)
+        if extra_ref_metrics:
+            for suffix, extra_metrics in extra_ref_metrics.items():
+                extra_ratios = compute_ratios(
+                    gen_metrics=to_log,
+                    ref_metrics=extra_metrics["test"] if test else extra_metrics["val"],
+                    metrics_keys=["degree", "clustering", "orbit", "spectre", "wavelet"],
+                )
+                to_log.update({f"{key}_{suffix}": value for key, value in extra_ratios.items()})
 
         print("Sampling statistics", to_log)
         if wandb.run:

@@ -1,5 +1,6 @@
 import copy
 import os
+from pathlib import Path
 import torch
 
 from src.utils import adjs_to_graphs
@@ -14,8 +15,12 @@ class DistributionNodes:
         return idx.to(device)
 
 
-def compute_reference_metrics(datamodule, sampling_metrics):
-    dataset_name = getattr(datamodule.config.data, "data", "dataset")
+def resolve_size_ref_dataset_path(data_dir, dataset_name, target_nodes):
+    return Path(data_dir) / "size_ref" / dataset_name / f"{dataset_name}_{target_nodes}.pkl"
+
+
+def compute_reference_metrics(datamodule, sampling_metrics, cache_name=None):
+    dataset_name = cache_name or getattr(datamodule.config.data, "data", "dataset")
     metrics_dir = os.path.join(datamodule.config.data.dir, "ref_metrics")
     os.makedirs(metrics_dir, exist_ok=True)
     metrics_path = os.path.join(metrics_dir, f"ref_metrics_{dataset_name}.pt")
@@ -74,3 +79,26 @@ def compute_reference_metrics(datamodule, sampling_metrics):
     torch.save(ref_metrics, metrics_path)
     print(f"Saved sampling metrics to {metrics_path}.")
     return ref_metrics
+
+
+def load_size_ref_metrics(cfg, metrics_cls, target_nodes):
+    from src.dataset.spectre import SpectreDatasetModule
+
+    size_ref_path = resolve_size_ref_dataset_path(cfg.data.dir, cfg.data.data, target_nodes)
+    if not size_ref_path.exists():
+        raise FileNotFoundError(
+            f"Size-ref dataset not found for dataset '{cfg.data.data}' and target_nodes={target_nodes}: {size_ref_path}"
+        )
+
+    ref_cfg = copy.deepcopy(cfg)
+    ref_cfg.data.data = str(size_ref_path)
+    ref_datamodule = SpectreDatasetModule(ref_cfg)
+    ref_datamodule.setup()
+    ref_sampling_metrics = metrics_cls(ref_datamodule)
+    cache_name = f"{cfg.data.data}_size_{target_nodes}"
+    size_ref_metrics = compute_reference_metrics(
+        ref_datamodule,
+        ref_sampling_metrics,
+        cache_name=cache_name,
+    )
+    return size_ref_metrics

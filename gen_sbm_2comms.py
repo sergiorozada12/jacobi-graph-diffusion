@@ -7,7 +7,11 @@ import pytorch_lightning as pl
 
 from src.models.transformer_model import GraphTransformer
 from src.dataset.spectre import SpectreDatasetModule
-from src.dataset.utils import DistributionNodes, compute_reference_metrics
+from src.dataset.utils import (
+    DistributionNodes,
+    compute_reference_metrics,
+    load_size_ref_metrics,
+)
 from src.sample.sampler import Sampler
 from configs.config_sbm_2comms import MainConfig
 from src.metrics.val import SBMSamplingMetrics
@@ -75,6 +79,13 @@ def parse_args():
     parser.add_argument("--snr", type=float, default=None, help="Override cfg.sampler.snr.")
     parser.add_argument("--scale-eps", type=float, default=None, help="Override cfg.sampler.scale_eps.")
     parser.add_argument("--n-steps", type=int, default=None, help="Override cfg.sampler.n_steps.")
+    parser.add_argument(
+        "--no-average-ratio-to-size-ref",
+        dest="average_ratio_to_size_ref",
+        action="store_false",
+        help="Disable size-matched reference ratio computation.",
+    )
+    parser.set_defaults(average_ratio_to_size_ref=True)
     return parser.parse_args()
 
 
@@ -227,10 +238,24 @@ def main():
     save_path = Path("samples/test_sbm_2comms.png")
     save_figure(fig, save_path, dpi=300)
 
+    extra_ref_metrics = None
+    if args.average_ratio_to_size_ref:
+        if args.min_nodes is None or args.max_nodes is None:
+            raise ValueError("Size-ref ratio computation requires both --min-nodes and --max-nodes.")
+        if args.min_nodes != args.max_nodes:
+            raise ValueError("Size-ref ratio computation requires --min-nodes and --max-nodes to be equal.")
+        size_ref_metrics = load_size_ref_metrics(
+            cfg=cfg,
+            metrics_cls=SBMSamplingMetrics,
+            target_nodes=args.min_nodes,
+        )
+        extra_ref_metrics = {"size_ref": size_ref_metrics}
+
     sampling_metrics.reset()
     metrics = sampling_metrics.forward(
         samples,
         ref_metrics=ref_metrics,
+        extra_ref_metrics=extra_ref_metrics,
         local_rank=0,
         test=True,
     )
@@ -238,6 +263,11 @@ def main():
     print('------------------------------------------------------------------------------------')
     for k in ref_metrics['val']:
         print(f"{k} ref. / gen. - {ref_metrics['val'][k]} / {metrics[k]}")
+
+    if extra_ref_metrics is not None:
+        print('------------------------------------------------------------------------------------')
+        for k in size_ref_metrics['val']:
+            print(f"{k} size-ref / gen. - {size_ref_metrics['val'][k]} / {metrics[k]}")
 
     print('------------------------------------------------------------------------------------')
     for k in metrics:
