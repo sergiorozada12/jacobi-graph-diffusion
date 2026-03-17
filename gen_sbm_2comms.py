@@ -10,7 +10,9 @@ from src.dataset.spectre import SpectreDatasetModule
 from src.dataset.utils import (
     DistributionNodes,
     compute_reference_metrics,
+    load_graphs_pickle,
     load_size_ref_metrics,
+    save_graphs_pickle,
 )
 from src.sample.sampler import Sampler
 from configs.config_sbm_2comms import MainConfig
@@ -80,6 +82,18 @@ def parse_args():
     parser.add_argument("--scale-eps", type=float, default=None, help="Override cfg.sampler.scale_eps.")
     parser.add_argument("--n-steps", type=int, default=None, help="Override cfg.sampler.n_steps.")
     parser.add_argument(
+        "--load-graphs-path",
+        type=str,
+        default=None,
+        help="Optional path to a saved graph pickle. If provided, skip generation and only run evaluation.",
+    )
+    parser.add_argument(
+        "--save-graphs-path",
+        type=str,
+        default=None,
+        help="Optional path where newly generated graphs will be saved as a pickle.",
+    )
+    parser.add_argument(
         "--no-average-ratio-to-size-ref",
         dest="average_ratio_to_size_ref",
         action="store_false",
@@ -136,6 +150,12 @@ def build_node_distribution(cfg, datamodule, min_nodes=None, max_nodes=None):
         raise ValueError("Probability mass over the requested range is zero; check the node range.")
     probs /= total_mass
     return DistributionNodes(prob=probs)
+
+
+def resolve_saved_graphs_output_path(args):
+    if args.save_graphs_path is not None:
+        return Path(args.save_graphs_path)
+    return Path("samples/test_sbm_2comms_graphs.pkl")
 
 
 def main():
@@ -197,46 +217,53 @@ def main():
     sampling_metrics = SBMSamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
-    model = GraphTransformer(
-        n_layers=cfg.model.n_layers,
-        input_dims=cfg.model.input_dims,
-        hidden_mlp_dims=cfg.model.hidden_mlp_dims,
-        hidden_dims=cfg.model.hidden_dims,
-        output_dims=cfg.model.output_dims,
-        act_fn_in=torch.nn.ReLU(),
-        act_fn_out=torch.nn.ReLU(),
-    )
-
-    if args.ckpt_path is not None:
-        weight_path = Path(args.ckpt_path)
-        if not weight_path.exists():
-            raise FileNotFoundError(f"Provided checkpoint path does not exist: {weight_path}")
+    if args.load_graphs_path is not None:
+        samples = load_graphs_pickle(args.load_graphs_path)
+        print(f"Loaded saved graphs from {args.load_graphs_path}")
     else:
-        ckpt_dir = Path("checkpoints") / cfg.data.data
-        ema_path = ckpt_dir / "weights_ema.pth"
-        weights_path = ckpt_dir / "weights.pth"
-        if cfg.train.use_ema and ema_path.exists():
-            weight_path = ema_path
-        elif weights_path.exists():
-            weight_path = weights_path
+        model = GraphTransformer(
+            n_layers=cfg.model.n_layers,
+            input_dims=cfg.model.input_dims,
+            hidden_mlp_dims=cfg.model.hidden_mlp_dims,
+            hidden_dims=cfg.model.hidden_dims,
+            output_dims=cfg.model.output_dims,
+            act_fn_in=torch.nn.ReLU(),
+            act_fn_out=torch.nn.ReLU(),
+        )
+
+        if args.ckpt_path is not None:
+            weight_path = Path(args.ckpt_path)
+            if not weight_path.exists():
+                raise FileNotFoundError(f"Provided checkpoint path does not exist: {weight_path}")
         else:
-            raise FileNotFoundError(
-                f"Could not find checkpoint for '{cfg.data.data}'. "
-                f"Looked for {ema_path} and {weights_path}."
-            )
+            ckpt_dir = Path("checkpoints") / cfg.data.data
+            ema_path = ckpt_dir / "weights_ema.pth"
+            weights_path = ckpt_dir / "weights.pth"
+            if cfg.train.use_ema and ema_path.exists():
+                weight_path = ema_path
+            elif weights_path.exists():
+                weight_path = weights_path
+            else:
+                raise FileNotFoundError(
+                    f"Could not find checkpoint for '{cfg.data.data}'. "
+                    f"Looked for {ema_path} and {weights_path}."
+                )
 
-    raw_ckpt = torch.load(weight_path, map_location="cpu")
-    state_dict = _load_graph_transformer_state_dict(raw_ckpt, use_ema=cfg.train.use_ema) if isinstance(raw_ckpt, dict) else raw_ckpt
-    model.load_state_dict(state_dict)
-    model = model.to(cfg.general.device)
-    model.eval()
+        raw_ckpt = torch.load(weight_path, map_location="cpu")
+        state_dict = _load_graph_transformer_state_dict(raw_ckpt, use_ema=cfg.train.use_ema) if isinstance(raw_ckpt, dict) else raw_ckpt
+        model.load_state_dict(state_dict)
+        model = model.to(cfg.general.device)
+        model.eval()
 
-    pl.seed_everything(cfg.general.seed, workers=True)
-    sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
-    samples, fig = sampler.sample()
+        pl.seed_everything(cfg.general.seed, workers=True)
+        sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
+        samples, fig = sampler.sample()
 
-    save_path = Path("samples/test_sbm_2comms.png")
-    save_figure(fig, save_path, dpi=300)
+        save_path = Path("samples/test_sbm_2comms.png")
+        save_figure(fig, save_path, dpi=300)
+        save_graphs_path = resolve_saved_graphs_output_path(args)
+        save_graphs_pickle(samples, save_graphs_path)
+        print(f"Saved generated graphs to {save_graphs_path}")
 
     extra_ref_metrics = None
     if args.average_ratio_to_size_ref:

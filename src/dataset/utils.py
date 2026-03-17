@@ -1,5 +1,6 @@
 import copy
 import os
+import pickle
 from pathlib import Path
 import torch
 
@@ -17,6 +18,20 @@ class DistributionNodes:
 
 def resolve_size_ref_dataset_path(data_dir, dataset_name, target_nodes):
     return Path(data_dir) / "size_ref" / dataset_name / f"{dataset_name}_{target_nodes}.pkl"
+
+
+def save_graphs_pickle(graphs, output_path):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as f:
+        pickle.dump(graphs, f)
+
+
+def load_graphs_pickle(input_path):
+    input_path = Path(input_path)
+    with input_path.open("rb") as f:
+        graphs = pickle.load(f)
+    return graphs
 
 
 def compute_reference_metrics(datamodule, sampling_metrics, cache_name=None):
