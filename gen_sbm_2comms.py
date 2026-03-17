@@ -158,6 +158,16 @@ def resolve_saved_graphs_output_path(args):
     return Path("samples/test_sbm_2comms_graphs.pkl")
 
 
+def _print_ratio_block(metrics, suffix="", title="Ratios"):
+    print('------------------------------------------------------------------------------------')
+    print(title)
+    print('------------------------------------------------------------------------------------')
+    for k in metrics:
+        if not k.endswith('_ratio' + suffix) and not k.endswith('average_ratio' + suffix):
+            continue
+        print(f"{k} - {metrics[k]}")
+
+
 def main():
     args = parse_args()
     cfg = OmegaConf.structured(MainConfig())
@@ -291,16 +301,15 @@ def main():
     for k in ref_metrics['val']:
         print(f"{k} ref. / gen. - {ref_metrics['val'][k]} / {metrics[k]}")
 
+    _print_ratio_block(metrics, title="Training-distribution ratios")
+
     if extra_ref_metrics is not None:
+        print('------------------------------------------------------------------------------------')
+        print('Size-matched reference comparison')
         print('------------------------------------------------------------------------------------')
         for k in size_ref_metrics['val']:
             print(f"{k} size-ref / gen. - {size_ref_metrics['val'][k]} / {metrics[k]}")
-
-    print('------------------------------------------------------------------------------------')
-    for k in metrics:
-        if '_ratio' not in k:
-            continue
-        print(f"{k} - {metrics[k]}")
+        _print_ratio_block(metrics, suffix="_size_ref", title="Size-matched reference ratios")
 
 
 if __name__ == "__main__":
