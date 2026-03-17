@@ -617,7 +617,11 @@ def eval_acc_tree_graph(G_list):
             count += 1
     return count / float(len(G_list))
 
-def eval_tree_structure_metrics(G_list):
+def eval_tree_structure_metrics(G_list, train_size_range=None):
+    train_range_min, train_range_max = (None, None)
+    if train_size_range is not None:
+        train_range_min, train_range_max = train_size_range
+
     if len(G_list) == 0:
         return {
             "tree_acc": 0.0,
@@ -625,6 +629,7 @@ def eval_tree_structure_metrics(G_list):
             "connected_acc": 0.0,
             "mean_num_components": 0.0,
             "mean_lcc_fraction": 0.0,
+            "tree_train_range_node_mass_fraction": 0.0,
         }
 
     tree_count = 0
@@ -632,6 +637,7 @@ def eval_tree_structure_metrics(G_list):
     connected_count = 0
     num_components_sum = 0.0
     lcc_ratio_sum = 0.0
+    train_range_node_mass_sum = 0.0
 
     for gg in G_list:
         n_nodes = gg.number_of_nodes()
@@ -641,12 +647,24 @@ def eval_tree_structure_metrics(G_list):
             forest_count += 1
 
         if n_nodes > 0:
+            components = list(nx.connected_components(gg))
+
+            # Fraction of nodes that belong to components in the training size range.
+            if train_range_min is not None and train_range_max is not None:
+                nodes_in_train_range = sum(
+                    len(c)
+                    for c in components
+                    if train_range_min <= len(c) <= train_range_max
+                )
+                train_range_node_mass_sum += nodes_in_train_range / float(n_nodes)
+            else:
+                train_range_node_mass_sum += 0.0
+
             if nx.is_connected(gg):
                 connected_count += 1
                 num_components_sum += 1.0
                 lcc_ratio_sum += 1.0
             else:
-                components = list(nx.connected_components(gg))
                 n_components = len(components)
                 num_components_sum += float(n_components)
                 largest_cc_size = max((len(c) for c in components), default=0)
@@ -654,6 +672,7 @@ def eval_tree_structure_metrics(G_list):
         else:
             num_components_sum += 0.0
             lcc_ratio_sum += 0.0
+            train_range_node_mass_sum += 0.0
 
     denom = float(len(G_list))
     return {
@@ -662,6 +681,7 @@ def eval_tree_structure_metrics(G_list):
         "connected_acc": connected_count / denom,
         "mean_num_components": num_components_sum / denom,
         "mean_lcc_fraction": lcc_ratio_sum / denom,
+        "tree_train_range_node_mass_fraction": train_range_node_mass_sum / denom,
     }
 
 
@@ -995,6 +1015,11 @@ class SpectreSamplingMetrics(nn.Module):
         self.test_ref_eigvals, self.test_ref_eigvecs = compute_list_eigh(
             self.test_graphs
         )
+        self.train_size_range = self._infer_train_size_range()
+
+    def _infer_train_size_range(self):
+        node_sizes = [g.number_of_nodes() for g in self.train_graphs if g is not None]
+        return (min(node_sizes), max(node_sizes))
 
     def loader_to_nx(self, loader):
         networkx_graphs = []
@@ -1136,7 +1161,9 @@ class SpectreSamplingMetrics(nn.Module):
         if "tree" in self.metrics_list:
             if local_rank == 0:
                 print("Computing tree accuracy...")
-            tree_metrics = eval_tree_structure_metrics(networkx_graphs)
+            tree_metrics = eval_tree_structure_metrics(
+                networkx_graphs, train_size_range=self.train_size_range
+            )
             to_log.update(tree_metrics)
             if wandb.run:
                 for key, value in tree_metrics.items():
