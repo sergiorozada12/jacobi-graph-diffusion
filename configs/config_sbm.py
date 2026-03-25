@@ -13,6 +13,8 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = True
     eps_time: float = 1e-4
+    time_schedule: str = "log"
+    time_schedule_power: float = 2.0
     snr: float = 0.02 # This goes good with 0.000001 scale_eps = 0
     scale_eps: float = 0.0001 # 0.01 ratio 54
     n_steps: int = 1
@@ -74,7 +76,10 @@ class TrainConfig:
     lr: float = 0.0002
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-5
+    eps_time_train: float = 1e-4
+    eps_sde_train: float = 1e-1
+    time_schedule_train: str = "log"
+    time_schedule_power_train: float = 2.0
     num_epochs: int = 10_000
     lambda_train: float = 5.0
     training_mode: str = "graph"  # options: "graph", "weighted", "direct_score"
@@ -91,11 +96,7 @@ class SDEConfig:
     order: int = 10
     sample_target: bool = False # True with order 10 and mindiff 0.1 best convo so far
     eps_sde: float = 1e-1
-    max_force: float = 1000.0
     eps_score: float = 1e-10
-    eps_score_dist: float = 1e-5
-    time_schedule: str = "log"
-    time_schedule_power: float = 2.0
 
 @dataclass
 class MainConfig:

@@ -30,7 +30,6 @@ class Sampler:
             s_min=cfg_sde.s_min,
             s_max=cfg_sde.s_max,
             eps=cfg_sde.eps_sde,
-            max_force=cfg_sde.max_force,
         )
 
     def _get_solver(self):
@@ -52,11 +51,10 @@ class Sampler:
             order=self.cfg.sde.order,
             sample_target=self.cfg.sde.sample_target,
             eps_score=self.cfg.sde.eps_score,
-            eps_score_dist=self.cfg.sde.eps_score_dist,
             use_corrector=self.cfg.sampler.use_corrector,
             predictor_type=getattr(self.cfg.sampler, "predictor", "em"),
-            time_schedule=self.cfg.sde.time_schedule,
-            time_schedule_power=self.cfg.sde.time_schedule_power,
+            time_schedule=self.cfg.sampler.time_schedule,
+            time_schedule_power=self.cfg.sampler.time_schedule_power,
             use_sampled_features=self.use_sampled_features,
             score_mode=self.score_mode,
         )

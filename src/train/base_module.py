@@ -36,7 +36,6 @@ class DiffusionBaseModule(pl.LightningModule):
         self.train_loss = train_loss
 
         self.dataset_name = cfg.data.data
-        self.loss_eps = cfg.train.eps
         self._ran_sampling_metrics = False
 
         self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
@@ -77,9 +76,9 @@ class DiffusionBaseModule(pl.LightningModule):
         self.time_schedule_steps = build_time_schedule(
             N=cfg.sde.num_scales,
             T=self.sde.T,
-            eps=cfg.sampler.eps_time,
-            kind=getattr(cfg.sde, "time_schedule", "log"),
-            power=getattr(cfg.sde, "time_schedule_power", 2.0),
+            eps=cfg.train.eps_time_train,
+            kind=cfg.train.time_schedule_train,
+            power=cfg.train.time_schedule_power_train,
         )
 
     def _build_sde(self, cfg_sde):
@@ -89,8 +88,7 @@ class DiffusionBaseModule(pl.LightningModule):
             N=cfg_sde.num_scales,
             s_min=cfg_sde.s_min,
             s_max=cfg_sde.s_max,
-            eps=cfg_sde.eps_sde,
-            max_force=cfg_sde.max_force,
+            eps=self.cfg.train.eps_sde_train,
         )
 
     def _get_eval_model(self):
@@ -165,7 +163,7 @@ class DiffusionBaseModule(pl.LightningModule):
         lower = schedule[idx + 1]
         u = torch.rand(batch_size, device=self.device)
         t = lower + (upper - lower) * u
-        return t.clamp(min=self.loss_eps)
+        return t
 
     @staticmethod
     def _edge_mask(flags: torch.Tensor) -> torch.Tensor:
@@ -224,7 +222,7 @@ class DiffusionBaseModule(pl.LightningModule):
                 keep_isolates=val_keep_isolates,
                 use_node_dist=not val_use_full,
                 nodelist=nodelist,
-                keep_zero_weights=(self.cfg.train.training_mode == "weighted"),
+                keep_zero_weights=False,
                 return_adjs=True,
             )
         wandb.log({"val/sampler": wandb.Image(fig)})

@@ -25,7 +25,6 @@ class DiffusionScoreModule(DiffusionBaseModule):
         helper = JacobiScore.__new__(JacobiScore)
         helper.order = cfg_sde.order
         helper.eps = cfg_sde.eps_score
-        helper.eps_dist = cfg_sde.eps_score_dist
         helper.alpha = cfg_sde.alpha
         helper.beta = cfg_sde.beta
         helper.jacobi_a = helper.beta - 1.0

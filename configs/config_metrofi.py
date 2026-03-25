@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -15,6 +16,8 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = True
     eps_time: float = 1e-1
+    time_schedule: str = "log"
+    time_schedule_power: float = 2.0
     snr: float = 0.1
     scale_eps: float = 2.5
     n_steps: int = 5
@@ -90,7 +93,10 @@ class TrainConfig:
     lr: float = 2e-4
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-5
+    eps_time_train: float = 1e-1
+    eps_sde_train: float = 1e-5
+    time_schedule_train: str = "log"
+    time_schedule_power_train: float = 2.0
     num_epochs: int = 200
     lambda_train: float = 5.0
     use_ema: bool = True
@@ -108,11 +114,7 @@ class SDEConfig:
     order: int = 200
     sample_target: bool = False
     eps_sde: float = 1e-5
-    max_force: float = 1000.0
     eps_score: float = 1e-10
-    eps_score_dist: float = 1e-5
-    time_schedule: str = "log"
-    time_schedule_power: float = 2.0
 
 
 @dataclass

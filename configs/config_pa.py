@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-
+from typing import Optional
 
 @dataclass
 class GeneralConfig:
@@ -14,6 +14,8 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = True
     eps_time: float = 1e-5
+    time_schedule: str = "log"
+    time_schedule_power: float = 2.0
     snr: float = 1.0
     scale_eps: float = 2.0
     n_steps: int = 2
@@ -28,7 +30,7 @@ class DataConfig:
     dir: str = "data"
     data: str = "pa_graphon"
     batch_size: int = 100
-    max_node_num: int = 60
+    max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
     val_split: float = 0.1
@@ -77,7 +79,10 @@ class TrainConfig:
     lr: float = 2e-4
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-6
+    eps_time_train: float = 1e-5
+    eps_sde_train: float = 1e-1
+    time_schedule_train: str = "log"
+    time_schedule_power_train: float = 2.0
     num_epochs: int = 15_000
     lambda_train: float = 5.0
     use_ema: bool = True
@@ -95,11 +100,7 @@ class SDEConfig:
     order: int = 30 # 30
     sample_target: bool = True
     eps_sde: float = 1e-1
-    max_force: float = 1000.0
     eps_score: float = 1e-10
-    eps_score_dist: float = 1e-5
-    time_schedule: str = "log"
-    time_schedule_power: float = 2.0
 
 
 @dataclass

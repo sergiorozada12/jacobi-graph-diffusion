@@ -6,15 +6,13 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
-from configs.config_tree import MainConfig
-
+from configs.config_sbm_2comms import MainConfig
 
 from src.train.trainer_graph import DiffusionGraphModule, DiffusionWeightedGraphModule
 from src.train.trainer_score import DiffusionScoreModule
-from src.dataset.synth import SynthGraphDatasetModule
 from src.dataset.spectre import SpectreDatasetModule
 from src.dataset.utils import DistributionNodes, compute_reference_metrics
-from src.metrics.val import TreeSamplingMetrics, SBMSamplingMetrics, PlanarSamplingMetrics, PASamplingMetrics
+from src.metrics.val import SBMSamplingMetrics
 
 
 def main():
@@ -32,7 +30,7 @@ def main():
 
     node_dist = DistributionNodes(prob=datamodule.node_counts())
 
-    sampling_metrics = TreeSamplingMetrics(datamodule)
+    sampling_metrics = SBMSamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
     if train_mode == "direct_score":
@@ -64,7 +62,7 @@ def main():
     wandb_run_id = None
     logger = WandbLogger(
         project="jacobi-graph-diffusion",
-        name="tree",
+        name="sbm-2comms-graphon",
         id=wandb_run_id,
         resume="must" if wandb_run_id else None,
     )

@@ -11,6 +11,8 @@ eval/
 hyperparams/
 test*
 nohup*
+*.sh
+sweep*
 
 # C extensions
 *.so

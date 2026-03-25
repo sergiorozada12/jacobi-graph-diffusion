@@ -23,7 +23,8 @@ class DiffusionGraphModule(DiffusionBaseModule):
         batch = self._prepare_batch(adj, observed_mask)
         flags = batch["flags"]
         pred = self._run_model(batch["extra_pred"], batch["y"], flags)
-        loss = self.train_loss(masked_pred_E=pred.E, true_E=batch["edge_true"])
+        mask = self._edge_mask(flags)
+        loss = self.train_loss(masked_pred_E=pred.E, true_E=batch["edge_true"], mask=mask)
         return {"loss": loss}
 
     def _validation_step_impl(self, X, adj, observed_mask):

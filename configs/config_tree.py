@@ -13,6 +13,8 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = True
     eps_time: float = 1e-06
+    time_schedule: str = "log"
+    time_schedule_power: float = 2.0
     snr: float = 0.1
     scale_eps: float = 0.1
     n_steps: int = 5
@@ -74,7 +76,10 @@ class TrainConfig:
     lr: float = 0.0002
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-4
+    eps_time_train: float = 1e-06
+    eps_sde_train: float = 0.001
+    time_schedule_train: str = "log"
+    time_schedule_power_train: float = 2.0
     num_epochs: int = 10_000
     lambda_train: float = 5.0
     use_ema: bool = True
@@ -91,11 +96,7 @@ class SDEConfig:
     order: int = 100
     sample_target: bool = True
     eps_sde: float = 0.001
-    max_force: float = 1000.0
     eps_score: float = 1e-10
-    eps_score_dist: float = 1e-5
-    time_schedule: str = "log" # This linear for beta
-    time_schedule_power: float = 2.0
 
 @dataclass
 class MainConfig:

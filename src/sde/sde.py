@@ -10,14 +10,13 @@ class JacobiSDE:
     Jacobi diffusion on [0,1] with cosine speed:
       s(t) = s_min + (s_max - s_min) * sin^2(pi t / 2),  t in [0,1]
     """
-    def __init__(self, N=1000, alpha=1.0, beta=1.0, s_min=0.1, s_max=2.0, eps=1e-5, max_force=1000.0):
+    def __init__(self, N=1000, alpha=1.0, beta=1.0, s_min=0.1, s_max=2.0, eps=1e-5):
         self.N = int(N)
         self.alpha = float(alpha)
         self.beta = float(beta)
         self.s_min = float(s_min)
         self.s_max = float(s_max)
         self.eps = float(eps)
-        self.max_force = max_force
         self.device = None
 
     @property
@@ -76,7 +75,6 @@ class JacobiSDE:
                     parent.s_min,
                     parent.s_max,
                     parent.eps,
-                    parent.max_force,
                 )
                 self.device = parent.device
     
