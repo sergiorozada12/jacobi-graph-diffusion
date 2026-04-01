@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 data/
 checkpoints/
+analysis/results/
 wandb/
 samples/
 eval/
@@ -200,6 +201,14 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Orca stuff
+src/metrics/orca/orca
+src/metrics/orca/tmp*
+
+# Symlinks
+# Without trailing slash to match symlink (data/ only matches directories)
+data
 
 # Added by Manuel
 analysis/results/

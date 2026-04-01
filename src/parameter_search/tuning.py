@@ -35,10 +35,13 @@ from src.sample.sampler import Sampler
 class SearchSpace:
     order: Optional[List[int]] = None
     sample_target: Optional[List[bool]] = None
+    num_scales: Optional[List[int]] = None
     eps_sde: Optional[List[float]] = None
     eps_score: Optional[List[float]] = None
     time_schedule: Optional[List[str]] = None
+    time_schedule_power: Optional[List[float]] = None
     eps_time: Optional[List[float]] = None
+    predictor: Optional[List[str]] = None
     use_corrector: Optional[List[bool]] = None
     snr: Optional[List[float]] = None
     scale_eps: Optional[List[float]] = None
@@ -54,7 +57,9 @@ class TuningSettings:
     seed: Optional[int] = None
     device: Optional[str] = None
     num_graphs: Optional[int] = None
+    ckpt_path: Optional[Union[str, Path]] = None
     results_path: Optional[Union[str, Path]] = None
+    store_name: Optional[str] = None
     verbose: bool = True
     suppress_external_output: bool = False
     search_space: SearchSpace = field(default_factory=SearchSpace)
@@ -191,28 +196,59 @@ def build_model(cfg):
     return model
 
 
-def load_weights(cfg, model: torch.nn.Module, use_ema: bool = True) -> None:
-    ckpt_dir = Path("checkpoints") / cfg.data.data
-    ema_path = ckpt_dir / "weights_ema.pth"
-    weights_path = ckpt_dir / "weights.pth"
+def _load_graph_transformer_state_dict(raw_ckpt: Dict[str, Any], use_ema: bool) -> Dict[str, Any]:
+    # Lightning checkpoints typically store weights under `state_dict` with prefixes
+    # like `model.` (or `ema_model.` when EMA is enabled).
+    if "state_dict" in raw_ckpt and isinstance(raw_ckpt["state_dict"], dict):
+        pl_state = raw_ckpt["state_dict"]
+        model_state = {k[len("model."):]: v for k, v in pl_state.items() if k.startswith("model.")}
+        ema_state = {k[len("ema_model."):]: v for k, v in pl_state.items() if k.startswith("ema_model.")}
 
-    weight_path = ema_path if use_ema and ema_path.exists() else weights_path
-    if not weight_path.exists():
-        raise FileNotFoundError(
-            f"Could not find checkpoint weights for dataset '{cfg.data.data}'. "
-            f"Searched: {ema_path} and {weights_path}"
-        )
-    state_dict = torch.load(weight_path, map_location="cpu")
+        if use_ema and ema_state:
+            return ema_state
+        if model_state:
+            return model_state
+        return pl_state
+
+    return raw_ckpt
+
+
+def load_weights(
+    cfg,
+    model: torch.nn.Module,
+    use_ema: bool = True,
+    ckpt_path: Optional[Union[str, Path]] = None,
+) -> None:
+    if ckpt_path is not None:
+        weight_path = Path(ckpt_path)
+        if not weight_path.exists():
+            raise FileNotFoundError(f"Provided checkpoint path does not exist: {weight_path}")
+    else:
+        ckpt_dir = Path("checkpoints") / cfg.data.data
+        ema_path = ckpt_dir / "weights_ema.pth"
+        weights_path = ckpt_dir / "weights.pth"
+        weight_path = ema_path if use_ema and ema_path.exists() else weights_path
+        if not weight_path.exists():
+            raise FileNotFoundError(
+                f"Could not find checkpoint weights for dataset '{cfg.data.data}'. "
+                f"Searched: {ema_path} and {weights_path}"
+            )
+
+    raw = torch.load(weight_path, map_location="cpu")
+    state_dict = _load_graph_transformer_state_dict(raw, use_ema=use_ema) if isinstance(raw, dict) else raw
     model.load_state_dict(state_dict)
 
 
 def prepare_search_space(cfg, space: SearchSpace):
     orders = space.order or [cfg.sde.order]
     sample_targets = space.sample_target or [cfg.sde.sample_target]
+    num_scales_list = space.num_scales or [cfg.sde.num_scales]
     eps_sde_list = space.eps_sde or [cfg.sde.eps_sde]
     eps_score_list = space.eps_score or [cfg.sde.eps_score]
     time_schedules = space.time_schedule or [cfg.sde.time_schedule]
+    time_schedule_powers = space.time_schedule_power or [cfg.sde.time_schedule_power]
     eps_time_list = space.eps_time or [cfg.sampler.eps_time]
+    predictors = space.predictor or [getattr(cfg.sampler, "predictor", "em")]
     use_correctors = space.use_corrector or [cfg.sampler.use_corrector]
     snr_list = space.snr or [cfg.sampler.snr]
     scale_eps_list = space.scale_eps or [cfg.sampler.scale_eps]
@@ -221,10 +257,13 @@ def prepare_search_space(cfg, space: SearchSpace):
     return (
         orders,
         sample_targets,
+        num_scales_list,
         eps_sde_list,
         eps_score_list,
         time_schedules,
+        time_schedule_powers,
         eps_time_list,
+        predictors,
         use_correctors,
         snr_list,
         scale_eps_list,
@@ -235,64 +274,90 @@ def prepare_search_space(cfg, space: SearchSpace):
 def enumerate_trials(
     orders: Iterable[int],
     sample_targets: Iterable[bool],
+    num_scales_list: Iterable[int],
     eps_sde_list: Iterable[float],
     eps_score_list: Iterable[float],
     time_schedules: Iterable[str],
+    time_schedule_powers: Iterable[float],
     eps_time_list: Iterable[float],
+    predictors: Iterable[str],
     use_correctors: Iterable[bool],
     snr_list: Iterable[float],
     scale_eps_list: Iterable[float],
     n_steps_list: Iterable[int],
 ) -> List[Dict[str, Any]]:
+    schedule_power_values = list(time_schedule_powers)
+    if not schedule_power_values:
+        raise ValueError("time_schedule_power search space must not be empty.")
+
+    trials = []
     base_space = product(
         orders,
         sample_targets,
+        num_scales_list,
         eps_sde_list,
         eps_score_list,
         time_schedules,
         eps_time_list,
+        predictors,
     )
-    trials = []
-    for order, sample_target, eps_sde, eps_score, time_schedule, eps_time in base_space:
-        for use_corrector in use_correctors:
-            if use_corrector:
-                for snr, scale_eps, n_steps in product(snr_list, scale_eps_list, n_steps_list):
+    schedules_using_power = {"power", "log_power", "double_log"}
+
+    for order, sample_target, num_scales, eps_sde, eps_score, time_schedule, eps_time, predictor in base_space:
+        active_powers = (
+            schedule_power_values
+            if str(time_schedule).lower() in schedules_using_power
+            else [schedule_power_values[0]]
+        )
+        for time_schedule_power in active_powers:
+            for use_corrector in use_correctors:
+                if use_corrector:
+                    for snr, scale_eps, n_steps in product(snr_list, scale_eps_list, n_steps_list):
+                        trials.append(
+                            {
+                                "order": order,
+                                "sample_target": sample_target,
+                                "num_scales": num_scales,
+                                "eps_sde": eps_sde,
+                                "eps_score": eps_score,
+                                "time_schedule": time_schedule,
+                                "time_schedule_power": time_schedule_power,
+                                "eps_time": eps_time,
+                                "predictor": predictor,
+                                "use_corrector": True,
+                                "snr": snr,
+                                "scale_eps": scale_eps,
+                                "n_steps": n_steps,
+                            }
+                        )
+                else:
                     trials.append(
                         {
                             "order": order,
                             "sample_target": sample_target,
+                            "num_scales": num_scales,
                             "eps_sde": eps_sde,
                             "eps_score": eps_score,
                             "time_schedule": time_schedule,
+                            "time_schedule_power": time_schedule_power,
                             "eps_time": eps_time,
-                            "use_corrector": True,
-                            "snr": snr,
-                            "scale_eps": scale_eps,
-                            "n_steps": n_steps,
+                            "predictor": predictor,
+                            "use_corrector": False,
                         }
                     )
-            else:
-                trials.append(
-                    {
-                        "order": order,
-                        "sample_target": sample_target,
-                        "eps_sde": eps_sde,
-                        "eps_score": eps_score,
-                        "time_schedule": time_schedule,
-                        "eps_time": eps_time,
-                        "use_corrector": False,
-                    }
-                )
     return trials
 
 
 def configure_trial(cfg, params: Dict[str, Any]):
     cfg.sde.order = params["order"]
     cfg.sde.sample_target = params["sample_target"]
+    cfg.sde.num_scales = params["num_scales"]
     cfg.sde.eps_sde = params["eps_sde"]
     cfg.sde.eps_score = params["eps_score"]
     cfg.sde.time_schedule = params["time_schedule"]
+    cfg.sde.time_schedule_power = params["time_schedule_power"]
     cfg.sampler.eps_time = params["eps_time"]
+    cfg.sampler.predictor = params["predictor"]
     cfg.sampler.use_corrector = params["use_corrector"]
 
     if cfg.sampler.use_corrector:
@@ -414,7 +479,7 @@ def run_tuning(base_cfg, settings: TuningSettings):
     node_dist = build_node_distribution(cfg, datamodule, settings.min_nodes, settings.max_nodes)
 
     model = build_model(cfg)
-    load_weights(cfg, model, use_ema=cfg.train.use_ema)
+    load_weights(cfg, model, use_ema=cfg.train.use_ema, ckpt_path=settings.ckpt_path)
     model.eval()
 
     search_space = prepare_search_space(cfg, settings.search_space)
@@ -429,7 +494,9 @@ def run_tuning(base_cfg, settings: TuningSettings):
 
     minimize_objective = settings.objective == "average_ratio"
     objective_mode = "min" if minimize_objective else "max"
-    if settings.min_nodes is not None and settings.max_nodes is not None:
+    if settings.store_name:
+        dataset_id = settings.store_name
+    elif settings.min_nodes is not None and settings.max_nodes is not None:
         dataset_id = f"{cfg.data.data}_nodes_{settings.min_nodes}_{settings.max_nodes}"
     else:
         dataset_id = cfg.data.data

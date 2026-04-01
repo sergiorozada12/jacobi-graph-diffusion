@@ -617,6 +617,73 @@ def eval_acc_tree_graph(G_list):
             count += 1
     return count / float(len(G_list))
 
+def eval_tree_structure_metrics(G_list, train_size_range=None):
+    train_range_min, train_range_max = (None, None)
+    if train_size_range is not None:
+        train_range_min, train_range_max = train_size_range
+
+    if len(G_list) == 0:
+        return {
+            "tree_acc": 0.0,
+            "forest_acc": 0.0,
+            "connected_acc": 0.0,
+            "mean_num_components": 0.0,
+            "mean_lcc_fraction": 0.0,
+            "tree_train_range_node_mass_fraction": 0.0,
+        }
+
+    tree_count = 0
+    forest_count = 0
+    connected_count = 0
+    num_components_sum = 0.0
+    lcc_ratio_sum = 0.0
+    train_range_node_mass_sum = 0.0
+
+    for gg in G_list:
+        n_nodes = gg.number_of_nodes()
+        if nx.is_tree(gg):
+            tree_count += 1
+        if nx.is_forest(gg):
+            forest_count += 1
+
+        if n_nodes > 0:
+            components = list(nx.connected_components(gg))
+
+            # Fraction of nodes that belong to components in the training size range.
+            if train_range_min is not None and train_range_max is not None:
+                nodes_in_train_range = sum(
+                    len(c)
+                    for c in components
+                    if train_range_min <= len(c) <= train_range_max
+                )
+                train_range_node_mass_sum += nodes_in_train_range / float(n_nodes)
+            else:
+                train_range_node_mass_sum += 0.0
+
+            if nx.is_connected(gg):
+                connected_count += 1
+                num_components_sum += 1.0
+                lcc_ratio_sum += 1.0
+            else:
+                n_components = len(components)
+                num_components_sum += float(n_components)
+                largest_cc_size = max((len(c) for c in components), default=0)
+                lcc_ratio_sum += largest_cc_size / float(n_nodes)
+        else:
+            num_components_sum += 0.0
+            lcc_ratio_sum += 0.0
+            train_range_node_mass_sum += 0.0
+
+    denom = float(len(G_list))
+    return {
+        "tree_acc": tree_count / denom,
+        "forest_acc": forest_count / denom,
+        "connected_acc": connected_count / denom,
+        "mean_num_components": num_components_sum / denom,
+        "mean_lcc_fraction": lcc_ratio_sum / denom,
+        "tree_train_range_node_mass_fraction": train_range_node_mass_sum / denom,
+    }
+
 
 def eval_acc_grid_graph(G_list, grid_start=10, grid_end=20):
     count = 0
@@ -632,6 +699,7 @@ def eval_acc_sbm_graph(
     p_inter=0.005,
     strict=True,
     refinement_steps=100,
+    seed=0,
     is_parallel=True,
 ):
     count = 0.0
@@ -644,6 +712,7 @@ def eval_acc_sbm_graph(
                 [p_inter for i in range(len(G_list))],
                 [strict for i in range(len(G_list))],
                 [refinement_steps for i in range(len(G_list))],
+                [seed for i in range(len(G_list))],
             ):
                 count += prob
     else:
@@ -654,6 +723,7 @@ def eval_acc_sbm_graph(
                 p_inter=p_inter,
                 strict=strict,
                 refinement_steps=refinement_steps,
+                seed=seed,
             )
     return count / float(len(G_list))
 
@@ -740,7 +810,7 @@ def is_grid_graph(G):
         return False
 
 
-def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=100):
+def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=100, seed=0):
     """
     Check if how closely given graph matches a SBM with given probabilites by computing mean probability of Wald test statistic for each recovered parameter
     """
@@ -749,6 +819,7 @@ def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=10
     idx = adj.nonzero()
     g = gt.Graph()
     g.add_edge_list(np.transpose(idx))
+    gt.seed_rng(seed)
     try:
         state = gt.minimize_blockmodel_dl(g)
     except ValueError:
@@ -948,6 +1019,11 @@ class SpectreSamplingMetrics(nn.Module):
         self.test_ref_eigvals, self.test_ref_eigvecs = compute_list_eigh(
             self.test_graphs
         )
+        self.train_size_range = self._infer_train_size_range()
+
+    def _infer_train_size_range(self):
+        node_sizes = [g.number_of_nodes() for g in self.train_graphs if g is not None]
+        return (min(node_sizes), max(node_sizes))
 
     def loader_to_nx(self, loader):
         networkx_graphs = []
@@ -961,6 +1037,7 @@ class SpectreSamplingMetrics(nn.Module):
         self,
         generated_graphs: list,
         ref_metrics,
+        extra_ref_metrics=None,
         local_rank=0,
         test=False,
     ):
@@ -1064,7 +1141,7 @@ class SpectreSamplingMetrics(nn.Module):
             if local_rank == 0:
                 print("Computing accuracy...")
             sbm_acc = eval_acc_sbm_graph(
-                networkx_graphs, refinement_steps=100, strict=True
+                networkx_graphs, refinement_steps=100, strict=True, is_parallel=True
             )
             to_log["sbm_acc"] = sbm_acc
             if wandb.run:
@@ -1089,10 +1166,13 @@ class SpectreSamplingMetrics(nn.Module):
         if "tree" in self.metrics_list:
             if local_rank == 0:
                 print("Computing tree accuracy...")
-            tree_acc = eval_acc_tree_graph(networkx_graphs)
-            to_log["tree_acc"] = tree_acc
+            tree_metrics = eval_tree_structure_metrics(
+                networkx_graphs, train_size_range=self.train_size_range
+            )
+            to_log.update(tree_metrics)
             if wandb.run:
-                wandb.run.summary["tree_acc"] = tree_acc
+                for key, value in tree_metrics.items():
+                    wandb.run.summary[key] = value
 
         if (
             "sbm" in self.metrics_list
@@ -1139,6 +1219,14 @@ class SpectreSamplingMetrics(nn.Module):
             metrics_keys=["degree", "clustering", "orbit", "spectre", "wavelet"],
         )
         to_log.update(ratios)
+        if extra_ref_metrics:
+            for suffix, extra_metrics in extra_ref_metrics.items():
+                extra_ratios = compute_ratios(
+                    gen_metrics=to_log,
+                    ref_metrics=extra_metrics["test"] if test else extra_metrics["val"],
+                    metrics_keys=["degree", "clustering", "orbit", "spectre", "wavelet"],
+                )
+                to_log.update({f"{key}_{suffix}": value for key, value in extra_ratios.items()})
 
         print("Sampling statistics", to_log)
         if wandb.run:

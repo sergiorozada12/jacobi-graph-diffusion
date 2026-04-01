@@ -22,6 +22,18 @@ def parse_args():
         default=None,
         help="Maximum number of nodes to sample during tuning. Requires --min-nodes.",
     )
+    parser.add_argument(
+        "--ckpt-path",
+        type=str,
+        default=None,
+        help="Optional checkpoint path to force during tuning (supports Lightning .ckpt and plain .pth).",
+    )
+    parser.add_argument(
+        "--store-name",
+        type=str,
+        default=None,
+        help="Optional hyperparameter store name (writes to hyperparams/<store-name>.json).",
+    )
     return parser.parse_args()
 
 
@@ -50,9 +62,11 @@ def main():
         metrics_alias=None,
         max_trials=None,
         seed=None,
-        device='cuda:1',
+        device='cuda:0',
         num_graphs=None,
+        ckpt_path=args.ckpt_path,
         results_path=None,
+        store_name=args.store_name,
         verbose=True,
         suppress_external_output=True,
         search_space=search_space,

@@ -224,7 +224,7 @@ class DiffusionBaseModule(pl.LightningModule):
                 keep_isolates=val_keep_isolates,
                 use_node_dist=not val_use_full,
                 nodelist=nodelist,
-                keep_zero_weights=True,
+                keep_zero_weights=(self.cfg.train.training_mode == "weighted"),
                 return_adjs=True,
             )
         wandb.log({"val/sampler": wandb.Image(fig)})
@@ -237,7 +237,7 @@ class DiffusionBaseModule(pl.LightningModule):
             local_rank=self.local_rank,
             test=False,
         )
-
+   
         self._maybe_log_weight_histograms(samples, adj_samples)
 
     def _training_step_impl(self, batch_idx, X, adj, observed_mask):
