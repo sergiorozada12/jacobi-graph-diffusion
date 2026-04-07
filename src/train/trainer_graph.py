@@ -23,8 +23,7 @@ class DiffusionGraphModule(DiffusionBaseModule):
         batch = self._prepare_batch(adj, observed_mask)
         flags = batch["flags"]
         pred = self._run_model(batch["extra_pred"], batch["y"], flags)
-        mask = self._edge_mask(flags)
-        loss = self.train_loss(masked_pred_E=pred.E, true_E=batch["edge_true"], mask=mask)
+        loss = self.train_loss(masked_pred_E=pred.E, true_E=batch["edge_true"])
         return {"loss": loss}
 
     def _validation_step_impl(self, X, adj, observed_mask):
@@ -157,7 +156,7 @@ class DiffusionWeightedGraphModule(DiffusionBaseModule):
         pred_edges = pred.E[..., 0]
         target_edges = adj.float()
         mask = self._edge_mask(flags)
-        loss = self.train_loss(pred_edges, target_edges, mask)
+        loss = self.train_loss(pred_edges, target_edges)
         return {"loss": loss}
 
     def _validation_step_impl(self, X, adj, observed_mask):

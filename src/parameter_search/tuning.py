@@ -375,6 +375,8 @@ def evaluate_trial(
     metrics_module: SpectreSamplingMetrics,
     ref_metrics: Dict[str, Dict[str, float]],
     trial_seed: int,
+    metrics_module_specific: Optional[SpectreSamplingMetrics] = None,
+    ref_metrics_specific: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, float]:
     trial_cfg = clone_config(base_cfg)
     configure_trial(trial_cfg, params)
@@ -394,6 +396,18 @@ def evaluate_trial(
         local_rank=0,
         test=True,
     )
+
+    if metrics_module_specific is not None and ref_metrics_specific is not None:
+        metrics_module_specific.reset()
+        metrics_specific = metrics_module_specific.forward(
+            samples,
+            ref_metrics=ref_metrics_specific,
+            local_rank=0,
+            test=True,
+        )
+        for k, v in metrics_specific.items():
+            metrics[f"size_specific_{k}"] = v
+
     return metrics
 
 
@@ -476,6 +490,28 @@ def run_tuning(base_cfg, settings: TuningSettings):
         ref_metrics = compute_reference_metrics(datamodule, metrics_for_ref)
     metrics_module = metrics_cls(datamodule)
 
+    metrics_module_specific = None
+    ref_metrics_specific = None
+    if settings.min_nodes is not None and settings.min_nodes == settings.max_nodes:
+        cfg_specific = clone_config(cfg)
+        cfg_specific.data.data = f"{cfg.data.data}_{settings.min_nodes}"
+        try:
+            if "metrofi" in cfg_specific.data.data.lower():
+                from src.dataset.wireless import WirelessDatasetModule
+                datamodule_specific = WirelessDatasetModule(cfg_specific)
+            else:
+                datamodule_specific = SpectreDatasetModule(cfg_specific)
+            with maybe_silence(settings.suppress_external_output and not settings.verbose):
+                datamodule_specific.setup()
+            metrics_for_ref_specific = metrics_cls(datamodule_specific)
+            with maybe_silence(settings.suppress_external_output and not settings.verbose):
+                ref_metrics_specific = compute_reference_metrics(datamodule_specific, metrics_for_ref_specific)
+            metrics_module_specific = metrics_cls(datamodule_specific)
+        except Exception as e:
+            print(f"Failed to setup node-specific metrics for {cfg_specific.data.data}: {e}")
+            metrics_module_specific = None
+            ref_metrics_specific = None
+
     node_dist = build_node_distribution(cfg, datamodule, settings.min_nodes, settings.max_nodes)
 
     model = build_model(cfg)
@@ -552,6 +588,8 @@ def run_tuning(base_cfg, settings: TuningSettings):
                         metrics_module,
                         ref_metrics,
                         trial_seed=trial_seed,
+                        metrics_module_specific=metrics_module_specific,
+                        ref_metrics_specific=ref_metrics_specific,
                     )
                 obj_value, objective_key = compute_objective(
                     trial_metrics,

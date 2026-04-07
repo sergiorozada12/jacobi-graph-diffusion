@@ -17,6 +17,7 @@ import networkx as nx
 import subprocess as sp
 import concurrent.futures
 import powerlaw
+from collections import Counter
 
 from typing import Any, Dict, List, Optional
 
@@ -47,6 +48,9 @@ __all__ = [
     "eval_acc_lobster_graph",
 ]
 
+PA_ALPHA_RANGE = (2.4, 3.6)
+PA_HUB_SCALING = 0.5
+PA_SIGNIFICANCE_LEVEL = 0.01
 
 # Define a timeout handler
 def handler(signum, frame):
@@ -736,14 +740,48 @@ def eval_acc_planar_graph(G_list):
     return count / float(len(G_list))
 
 
-def eval_acc_pa_graph(G_list):
+def eval_acc_pa_graph(G_list, debug=False):
+    """Simple PA accuracy; set debug=True for detailed diagnostics."""
     if len(G_list) == 0:
         return 0.0
-    count = 0
+
+    passed = 0
+    failure_reasons = Counter()
+    failure_examples = {}
+    size_total = Counter()
+    size_valid = Counter()
+    max_examples_per_reason = 3
+
     for gg in G_list:
-        if is_pa_graph(gg):
-            count += 1
-    return count / float(len(G_list))
+        n_nodes = gg.number_of_nodes()
+        # Keep pa_acc on the same PA validity interface as sampling validity.
+        is_valid, reason = is_pa_graph_with_reason(
+            gg,
+            alpha_range=PA_ALPHA_RANGE,
+            hub_scaling=PA_HUB_SCALING,
+            significance_level=PA_SIGNIFICANCE_LEVEL,
+        )
+        size_total[n_nodes] += 1
+        if is_valid:
+            passed += 1
+            size_valid[n_nodes] += 1
+        else:
+            failure_reasons[reason] += 1
+            if debug and len(failure_examples.get(reason, [])) < max_examples_per_reason:
+                failure_examples.setdefault(reason, []).append(
+                    _summarize_graph_basic_stats(gg)
+                )
+
+    if debug:
+        _print_pa_debug_summary(
+            total_graphs=len(G_list),
+            passed=passed,
+            failure_reasons=failure_reasons,
+            size_total=size_total,
+            size_valid=size_valid,
+            failure_examples=failure_examples,
+        )
+    return passed / float(len(G_list))
 
 
 def is_planar_graph(G):
@@ -867,48 +905,199 @@ def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=10
     else:
         return p
 
+PA_REASON_STEPS = [
+    ("not_connected", "1) connected"),
+    ("too_few_positive_degrees", "2) enough positive degrees"),
+    ("powerlaw_fit_exception", "3) powerlaw fit"),
+    ("non_finite_alpha", "4) alpha finite"),
+    ("alpha_out_of_range", "5) alpha range"),
+    ("non_finite_xmin", "6) xmin finite"),
+    ("tail_too_small", "7) tail size"),
+    ("distribution_compare_exception", "8) distribution compare"),
+    ("non_finite_distribution_stats", "9) compare stats finite"),
+    ("exp_better_than_powerlaw_significant", "10) powerlaw vs exponential"),
+    ("hub_threshold_not_met", "11) hub threshold"),
+]
+
+
+def _summarize_graph_basic_stats(G):
+    n_nodes = G.number_of_nodes()
+    n_edges = G.number_of_edges()
+    if n_nodes == 0:
+        return {
+            "n_nodes": 0,
+            "n_edges": 0,
+            "density": 0.0,
+            "max_degree": 0,
+            "mean_degree": 0.0,
+            "connected": False,
+        }
+
+    degrees = np.array([d for _, d in G.degree()], dtype=float)
+    density = nx.density(G) if n_nodes > 1 else 0.0
+    connected = nx.is_connected(G) if n_nodes > 0 else False
+    return {
+        "n_nodes": int(n_nodes),
+        "n_edges": int(n_edges),
+        "density": float(density),
+        "max_degree": int(degrees.max()) if degrees.size else 0,
+        "mean_degree": float(degrees.mean()) if degrees.size else 0.0,
+        "connected": bool(connected),
+    }
+
+
+def _print_pa_failure_examples(failure_examples):
+    if not failure_examples:
+        print("PA failure examples: none")
+        return
+
+    print("PA failure examples (per reason):")
+    for reason in sorted(failure_examples.keys()):
+        print(f"  - reason={reason}:")
+        for idx, stats in enumerate(failure_examples[reason], start=1):
+            print(
+                "      "
+                f"#{idx} "
+                f"n={stats['n_nodes']}, "
+                f"m={stats['n_edges']}, "
+                f"density={stats['density']:.4f}, "
+                f"max_deg={stats['max_degree']}, "
+                f"mean_deg={stats['mean_degree']:.3f}, "
+                f"connected={stats['connected']}"
+            )
+
+
+def _print_pa_debug_summary(
+    total_graphs, passed, failure_reasons, size_total, size_valid, failure_examples
+):
+    print("PA check failure reason counts:")
+    for reason, num in failure_reasons.most_common():
+        print(f"  - {reason}: {num}")
+
+    reason_to_step = {reason: idx + 1 for idx, (reason, _) in enumerate(PA_REASON_STEPS)}
+    fail_at_step = Counter()
+    for reason, num in failure_reasons.items():
+        if reason in reason_to_step:
+            fail_at_step[reason_to_step[reason]] += num
+
+    survived = total_graphs
+    print("PA check step funnel:")
+    for idx, (_, label) in enumerate(PA_REASON_STEPS, start=1):
+        failed_here = fail_at_step[idx]
+        fail_ratio = failed_here / float(total_graphs)
+        print(
+            f"  - {label}: failed={failed_here}/{total_graphs} ({fail_ratio:.3f}), "
+            f"survived_before_step={survived}"
+        )
+        survived -= failed_here
+    print(
+        f"  - 12) final pass: passed={passed}/{total_graphs} "
+        f"({passed / float(total_graphs):.3f})"
+    )
+
+    print("PA validity by 10-node size bins:")
+    bin_total = Counter()
+    bin_valid = Counter()
+    for n_nodes, total in size_total.items():
+        size_bin = (n_nodes // 10) * 10
+        bin_label = f"{size_bin:03d}-{size_bin + 9:03d}"
+        bin_total[bin_label] += total
+        bin_valid[bin_label] += size_valid[n_nodes]
+    for bin_label in sorted(bin_total):
+        total = bin_total[bin_label]
+        valid = bin_valid[bin_label]
+        ratio = valid / float(total) if total else 0.0
+        print(f"  - n={bin_label}: valid={valid}/{total} ({ratio:.3f})")
+
+    if len(size_total) >= 2:
+        sizes = np.array(sorted(size_total.keys()), dtype=float)
+        validity = np.array(
+            [size_valid[int(s)] / float(size_total[int(s)]) for s in sizes], dtype=float
+        )
+        counts = np.array([size_total[int(s)] for s in sizes], dtype=float)
+
+        pearson_r = np.corrcoef(sizes, validity)[0, 1]
+        size_mean = np.average(sizes, weights=counts)
+        val_mean = np.average(validity, weights=counts)
+        cov = np.average((sizes - size_mean) * (validity - val_mean), weights=counts)
+        var_size = np.average((sizes - size_mean) ** 2, weights=counts)
+        var_val = np.average((validity - val_mean) ** 2, weights=counts)
+        weighted_pearson_r = cov / np.sqrt(var_size * var_val + 1e-12)
+        size_ranks = np.argsort(np.argsort(sizes)).astype(float)
+        val_ranks = np.argsort(np.argsort(validity)).astype(float)
+        spearman_r = np.corrcoef(size_ranks, val_ranks)[0, 1]
+        slope_per_10_nodes = np.polyfit(sizes, validity, 1)[0] * 10.0
+
+        print("PA size-validity trend summary:")
+        print(f"  - pearson_r (size vs validity): {pearson_r:.3f}")
+        print(f"  - weighted_pearson_r: {weighted_pearson_r:.3f}")
+        print(f"  - spearman_rho: {spearman_r:.3f}")
+        print(f"  - linear_slope_per_10_nodes: {slope_per_10_nodes:.3f}")
+
+    _print_pa_failure_examples(failure_examples)
 
 def is_pa_graph(
     G,
-    alpha_range=(2.6, 3.4),
-    significance_level=0.05,
-    hub_scaling=0.8,
+    alpha_range=PA_ALPHA_RANGE,
+    hub_scaling=PA_HUB_SCALING,
+    significance_level=PA_SIGNIFICANCE_LEVEL,
+):
+    is_valid, _ = is_pa_graph_with_reason(
+        G,
+        alpha_range=alpha_range,
+        hub_scaling=hub_scaling,
+        significance_level=significance_level,
+    )
+    return is_valid
+
+
+def is_pa_graph_simple(G):
+    """Short default check for future use."""
+    return is_pa_graph(G, alpha_range=(2.4, 3.6), hub_scaling=0.5, significance_level=0.0)
+
+
+def is_pa_graph_with_reason(
+    G,
+    alpha_range=PA_ALPHA_RANGE,  # 2.6, 3.4
+    hub_scaling=PA_HUB_SCALING,  # 0.7
+    significance_level=PA_SIGNIFICANCE_LEVEL,  # 0.001
+    tail_min_count=2,
 ):
     if not nx.is_connected(G):
-        return False
+        return False, "not_connected"
     degrees = np.array([d for _, d in G.degree()], dtype=int)
     degrees = degrees[degrees > 0]
     if degrees.size < 5:
-        return False
+        return False, "too_few_positive_degrees"
     base_min_degree = int(degrees.min())
     try:
         fit = powerlaw.Fit(degrees, discrete=True, verbose=False)
     except Exception:
-        return False
+        return False, "powerlaw_fit_exception"
     alpha = getattr(fit.power_law, "alpha", np.nan)
     if not np.isfinite(alpha):
-        return False
+        return False, "non_finite_alpha"
     if not (alpha_range[0] <= alpha <= alpha_range[1]):
-        return False
+        return False, "alpha_out_of_range"
     xmin = getattr(fit.power_law, "xmin", np.nan)
     if not np.isfinite(xmin):
-        return False
-    #tail_count = np.sum(degrees >= xmin)
-    #if tail_count < 5:
-    #    return False
+        return False, "non_finite_xmin"
+    tail_count = np.sum(degrees >= xmin)
+    if tail_count < tail_min_count:
+        return False, "tail_too_small"
     try:
         R, p = fit.distribution_compare("power_law", "exponential", normalized_ratio=True)
     except Exception:
-        return False
+        return False, "distribution_compare_exception"
     if not np.isfinite(R) or not np.isfinite(p):
-        return False
+        return False, "non_finite_distribution_stats"
     if R < 0 and p < significance_level:
-        return False
+        return False, "exp_better_than_powerlaw_significant"
     max_deg = degrees.max()
     n = G.number_of_nodes()
     if max_deg < hub_scaling * base_min_degree * np.sqrt(n):
-        return False
-    return True
+        return False, "hub_threshold_not_met"
+    return True, "pass"
 
 
 def eval_fraction_isomorphic(fake_graphs, train_graphs):

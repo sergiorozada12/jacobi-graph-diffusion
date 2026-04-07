@@ -13,7 +13,7 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-07
+    eps_time: float = 1e-8 # 1e-8
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
     snr: float = 0.01
@@ -91,12 +91,12 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1_000
+    num_scales: int = 1_000 # Looks good with 2000 and 3000 improves
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 100
     sample_target: bool = True
-    eps_sde: float = 1e-05
+    eps_sde: float = 1e-7 # 1e-7
     eps_score: float = 1e-10
 
 @dataclass
