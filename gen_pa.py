@@ -102,6 +102,23 @@ def main():
     sampling_metrics = PASamplingMetrics(datamodule)
     ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
 
+    sampling_metrics_specific = None
+    ref_metrics_specific = None
+    dataset_specific_name = None
+    if args.min_nodes is not None and args.min_nodes == args.max_nodes:
+        dataset_specific_name = f"{cfg.data.data}_{args.min_nodes}"
+        cfg_specific = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        cfg_specific.data.data = dataset_specific_name
+        try:
+            datamodule_specific = SpectreDatasetModule(cfg_specific)
+            datamodule_specific.setup()
+            sampling_metrics_specific = PASamplingMetrics(datamodule_specific)
+            ref_metrics_specific = compute_reference_metrics(datamodule_specific, sampling_metrics_specific)
+        except Exception as e:
+            print(f"Failed to setup node-specific metrics for {dataset_specific_name}: {e}")
+            sampling_metrics_specific = None
+            ref_metrics_specific = None
+
     model = GraphTransformer(
         n_layers=cfg.model.n_layers,
         input_dims=cfg.model.input_dims,
@@ -129,6 +146,7 @@ def main():
     model.eval()
 
     pl.seed_everything(cfg.general.seed, workers=True)
+    cfg.sampler.test_graphs = 2 # Temporary for fast verification
     sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
     samples, fig = sampler.sample()
 
@@ -152,6 +170,23 @@ def main():
         if '_ratio' not in k:
             continue
         print(f"{k} - {metrics[k]}")
+
+    if sampling_metrics_specific is not None and ref_metrics_specific is not None:
+        sampling_metrics_specific.reset()
+        metrics_specific = sampling_metrics_specific.forward(
+            samples,
+            ref_metrics=ref_metrics_specific,
+            local_rank=0,
+            test=True,
+        )
+        print(f'\n------------------------------------------------------------------------------------')
+        print(f'Metrics vs {dataset_specific_name}')
+        for k in ref_metrics_specific['val']:
+            print(f"{k} ref. / gen. - {ref_metrics_specific['val'][k]} / {metrics_specific.get(k, 'N/A')}")
+        print(f'------------------------------------------------------------------------------------')
+        for k in metrics_specific:
+            if '_ratio' in k:
+                print(f"{k} - {metrics_specific[k]}")
 
 if __name__ == "__main__":
     main()

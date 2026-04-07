@@ -13,6 +13,8 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = True
     eps_time: float = 1e-3
+    time_schedule: str = "log"
+    time_schedule_power: float = 2.0
     snr: float = 0.02 # This goes good with 0.000001 scale_eps = 0
     scale_eps: float = 0.0001 # 0.01 ratio 54
     n_steps: int = 2
@@ -74,7 +76,10 @@ class TrainConfig:
     lr: float = 0.0002 # 0.0002
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-5
+    eps_time_train: float = 1e-3
+    eps_sde_train: float = 1e-2
+    time_schedule_train: str = "log"
+    time_schedule_power_train: float = 2.0
     num_epochs: int = 20_000
     lambda_train: float = 5.0
     use_ema: bool = False
@@ -91,11 +96,7 @@ class SDEConfig:
     order: int = 100 # 30 works good for predictor
     sample_target: bool = False
     eps_sde: float = 1e-2 #3.1622776601e-3 # 3.16 works worse lol
-    max_force: float = 1000.0
     eps_score: float = 1e-10
-    eps_score_dist: float = 1e-5
-    time_schedule: str = "log"
-    time_schedule_power: float = 2.0
 
 @dataclass
 class MainConfig:

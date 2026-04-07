@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional
 
 @dataclass
 class GeneralConfig:
@@ -6,26 +7,28 @@ class GeneralConfig:
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
-    check_val_every_n_epochs: int = 500
+    check_val_every_n_epochs: int = 200
     save_checkpoint_every_n_epochs: int = 1000
 
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-9 #1e-8
+    eps_time: float = 1e-8 # 1e-8
+    time_schedule: str = "log"
+    time_schedule_power: float = 2.0
     snr: float = 0.01
     scale_eps: float = 1.0
     n_steps: int = 1
-    num_nodes: int = 10
-    test_graphs: int = 50
+    num_nodes: int = 80
+    test_graphs: int = 32
     use_corrector: bool = False
-    predictor: str = "milstein"  # "em" or "milstein" or "heun"
+    predictor: str = "em"  # "em" or "milstein" or "heun"
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "sbm_2comms_graphon"
-    batch_size: int = 50
+    batch_size: int = 32
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -71,11 +74,14 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    lr: float = 0.0002
+    lr: float = 0.00002 # 0.00002
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-5
-    num_epochs: int = 40_000
+    eps_time_train: float = 0.001
+    eps_sde_train: float = 0.0001
+    time_schedule_train: str = "cosine"
+    time_schedule_power_train: float = 1.0
+    num_epochs: int = 30_000
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
@@ -85,17 +91,13 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1_000
+    num_scales: int = 1_000 # Looks good with 2000 and 3000 improves
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 100
     sample_target: bool = True
-    eps_sde: float = 1e-5
-    max_force: float = 1000.0
+    eps_sde: float = 1e-7 # 1e-7
     eps_score: float = 1e-10
-    eps_score_dist: float = 1e-3
-    time_schedule: str = "log"
-    time_schedule_power: float = 2.0
 
 @dataclass
 class MainConfig:

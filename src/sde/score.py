@@ -15,7 +15,6 @@ class JacobiScore:
             max_n_nodes, 
             order=10, 
             eps_score=1e-10, 
-            eps_score_dist=1e-5, 
             sample_target=True,
             use_sampled_features=True,
             alpha=1.0,
@@ -24,7 +23,6 @@ class JacobiScore:
         ):
         self.order = order
         self.eps = eps_score
-        self.eps_dist = eps_score_dist
         self.model = model
         self.feature_extractor = ExtraFeatures(
             extra_features_type=extra_features,

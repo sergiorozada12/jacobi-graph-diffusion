@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-
+from typing import Optional
 
 @dataclass
 class GeneralConfig:
@@ -14,6 +14,8 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = True
     eps_time: float = 1e-5
+    time_schedule: str = "log"
+    time_schedule_power: float = 2.0
     snr: float = 1.0
     scale_eps: float = 2.0
     n_steps: int = 2
@@ -27,8 +29,8 @@ class SamplerConfig:
 class DataConfig:
     dir: str = "data"
     data: str = "pa_graphon"
-    batch_size: int = 100
-    max_node_num: int = 60
+    batch_size: int = 35
+    max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
     val_split: float = 0.1
@@ -38,27 +40,27 @@ class DataConfig:
 class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = 'rrwp'
-    rrwp_steps: int = 10
+    rrwp_steps: int = 20
     use_sampled_features: bool = True
-    n_layers: int = 4
+    n_layers: int = 10
     input_dims: dict = field(default_factory=lambda: {
-        "X": 10,
-        "E": 10,
-        "y": 6,
+        "X": 20,    # rrwp_steps
+        "E": 20,    # rrwp_steps
+        "y": 5 + 1, # +1 for time conditioning
     })
     hidden_mlp_dims: dict = field(default_factory=lambda: {
-        'X': 64,
-        'E': 32,
-        'y': 64
+        'X': 128,
+        'E': 64,
+        'y': 128
     })
     hidden_dims: dict = field(default_factory=lambda: {
-        'dx': 64,
-        'de': 32,
-        'dy': 32,
-        'n_head': 4,
-        'dim_ffX': 64,
-        'dim_ffE': 32,
-        'dim_ffy': 64
+        'dx': 256,
+        'de': 64,
+        'dy': 64,
+        'n_head': 8,
+        'dim_ffX': 256,
+        'dim_ffE': 64,
+        'dim_ffy': 256
     })
     output_dims: dict = field(default_factory=lambda: {
         "X": 0,
@@ -77,8 +79,11 @@ class TrainConfig:
     lr: float = 2e-4
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps: float = 1e-6
-    num_epochs: int = 15_000
+    eps_time_train: float = 1e-5
+    eps_sde_train: float = 1e-1
+    time_schedule_train: str = "log"
+    time_schedule_power_train: float = 2.0
+    num_epochs: int = 30_000
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
@@ -92,14 +97,10 @@ class SDEConfig:
     num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 30 # 30
+    order: int = 100
     sample_target: bool = True
-    eps_sde: float = 1e-1
-    max_force: float = 1000.0
+    eps_sde: float = 0.001
     eps_score: float = 1e-10
-    eps_score_dist: float = 1e-5
-    time_schedule: str = "log"
-    time_schedule_power: float = 2.0
 
 
 @dataclass

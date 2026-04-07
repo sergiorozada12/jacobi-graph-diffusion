@@ -4,18 +4,18 @@ import numpy as np
 import networkx as nx
 import scipy as sp
 
-
+N = 300
 NUM_GRAPHS = 500
 PLANAR_SIZE_RANGE = (10, 20)
 TREE_SIZE_RANGE = (20, 80)
 SBM_COMMS_RANGE = (2, 2)
-SBM_COMMS_SIZE = (20, 40)
+SBM_COMMS_SIZE = (10, 40)
 EGO_NUM_EGOS_RANGE = (2, 4)
 EGO_SIZE_RANGE = (5, 10)
 EGO_INTERCONNECT_PROB = 0.01
 EGO_INTRACONNECT_PROB = 0.005
-PA_SIZE_RANGE = (20, 60)
-PA_ATTACH = 3
+PA_SIZE_RANGE = (20, 80)
+PA_ATTACH = 3   
 SEED = 0
 VAL_RATIO = 0.1
 TEST_RATIO = 0.2
@@ -23,7 +23,7 @@ BASE_PATH = "data/"
 PATHS = {
     "planar": os.path.join(BASE_PATH, "planar_graphon.pkl"),
     "tree": os.path.join(BASE_PATH, "tree_graphon.pkl"),
-    "sbm": os.path.join(BASE_PATH, "sbm_2comms_graphon.pkl"),
+    "sbm": os.path.join(BASE_PATH, f"sbm_2comms_graphon.pkl"),
     "ego": os.path.join(BASE_PATH, "ego_graphon.pkl"),
     "pa": os.path.join(BASE_PATH, "pa_graphon.pkl"),
 }
@@ -195,7 +195,11 @@ if __name__ == "__main__":
     pa_dataset = split_graphs(pa_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 3)
 
     #save_graphs(planar_dataset, PATHS["planar"])
+<<<<<<< HEAD
     save_graphs(tree_dataset, PATHS["tree"])
+=======
+    #save_graphs(tree_dataset, PATHS["tree"])
+>>>>>>> c03cff6 (decouple scheduler logic from train and sampling)
     save_graphs(sbm_dataset, PATHS["sbm"])
     #save_graphs(ego_dataset, PATHS["ego"])
     #save_graphs(pa_dataset, PATHS["pa"])
