@@ -86,7 +86,7 @@ class TrainConfig:
     eps_sde_train: float = 1e-7
     time_schedule_train: str = "log"
     time_schedule_power_train: float = 2.0
-    num_epochs: int = 30_000
+    num_epochs: int = 60_000
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999
