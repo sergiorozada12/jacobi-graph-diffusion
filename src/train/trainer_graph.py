@@ -52,7 +52,7 @@ class DiffusionGraphModule(DiffusionBaseModule):
         flags = node_flags(adj, observed_mask)
         batch_size = adj.size(0)
         t = self._sample_time(batch_size)
-        adj_t, adj_t_sample = self._perturb_data(adj, flags, t)
+        adj_t, adj_t_sample = self._perturb_data(adj, flags, t, sample=True)
 
         edge_true = self._edge_channels(adj)
         edge_t = self._edge_channels(adj_t)
@@ -75,60 +75,6 @@ class DiffusionGraphModule(DiffusionBaseModule):
             "y": y,
         }
 
-    def _perturb_data(self, adj0: torch.Tensor, flags: torch.Tensor, T: torch.Tensor):
-        B = adj0.shape[0]
-        mask = (flags[:, :, None] * flags[:, None, :]).float()
-        dt = 1.0 / self.sde.N
-        adj = adj0.clone()
-
-        n_full = torch.floor(T / dt).clamp(max=self.sde.N - 1).long()
-        max_full = int(n_full.max().item()) if n_full.numel() > 0 else 0
-
-        for i in range(max_full):
-            t_val = i * dt
-            vec_t = torch.full((B,), t_val, device=self.device, dtype=T.dtype)
-
-            active = n_full > i
-            if not active.any():
-                break
-
-            mean, std_all = self.sde.transition(adj, vec_t, dt)
-            mean = mean * mask
-            std_all = std_all * mask
-            noise = gen_noise(adj, flags)
-
-            std_all = std_all.clamp(min=1e-4)
-            step = mean + std_all * noise
-            step = torch.clamp(step, 1e-4, 1.0 - 1e-4)
-
-            active_mask = active.view(B, 1, 1)
-            adj = torch.where(active_mask, step, adj)
-
-        t_full = n_full.to(dtype=T.dtype) * dt
-        dt_rem = (T - t_full).clamp_min(0.0)
-        has_remainder = dt_rem > 1e-12
-
-        if has_remainder.any():
-            vec_t = t_full
-            mean, std_all = self.sde.transition(adj, vec_t, dt_rem)
-            mean = mean * mask
-            std_all = std_all * mask
-            noise = gen_noise(adj, flags)
-
-            std_all = std_all.clamp(min=1e-4)
-            step = mean + std_all * noise
-            step = torch.clamp(step, 1e-4, 1.0 - 1e-4)
-
-            rem_mask = has_remainder.view(B, 1, 1)
-            adj = torch.where(rem_mask, step, adj)
-
-        adj_triu = torch.triu(adj, diagonal=1)
-        adj_triu_sample = torch.bernoulli(adj_triu)
-
-        adj = adj_triu + adj_triu.transpose(-1, -2)
-        adj_sample = adj_triu_sample + adj_triu_sample.transpose(-1, -2)
-
-        return adj, adj_sample
 
 
 class DiffusionWeightedGraphModule(DiffusionBaseModule):
@@ -193,7 +139,7 @@ class DiffusionWeightedGraphModule(DiffusionBaseModule):
         flags = node_flags(adj, observed_mask)
         batch_size = adj.size(0)
         t = self._sample_time(batch_size)
-        adj_t, adj_t_sample = self._perturb_data(adj, flags, t)
+        adj_t, adj_t_sample = self._perturb_data(adj, flags, t, sample=False, clamp_range=(0.0, 1.0))
 
         edge_true = self._edge_channels(adj)
         edge_t = self._edge_channels(adj_t)
@@ -216,54 +162,3 @@ class DiffusionWeightedGraphModule(DiffusionBaseModule):
             "y": y,
         }
 
-    def _perturb_data(self, adj0: torch.Tensor, flags: torch.Tensor, T: torch.Tensor):
-        B = adj0.shape[0]
-        mask = (flags[:, :, None] * flags[:, None, :]).float()
-        dt = 1.0 / self.sde.N
-        adj = adj0.clone()
-
-        n_full = torch.floor(T / dt).clamp(max=self.sde.N - 1).long()
-        max_full = int(n_full.max().item()) if n_full.numel() > 0 else 0
-
-        for i in range(max_full):
-            t_val = i * dt
-            vec_t = torch.full((B,), t_val, device=self.device, dtype=T.dtype)
-
-            active = n_full > i
-            if not active.any():
-                break
-
-            mean, std_all = self.sde.transition(adj, vec_t, dt)
-            mean = mean * mask
-            std_all = std_all * mask
-            noise = gen_noise(adj, flags)
-
-            std_all = std_all.clamp(min=1e-4)
-            step = mean + std_all * noise
-            step = torch.clamp(step, 0.0, 1.0)
-
-            active_mask = active.view(B, 1, 1)
-            adj = torch.where(active_mask, step, adj)
-
-        t_full = n_full.to(dtype=T.dtype) * dt
-        dt_rem = (T - t_full).clamp_min(0.0)
-        has_remainder = dt_rem > 1e-12
-
-        if has_remainder.any():
-            vec_t = t_full
-            mean, std_all = self.sde.transition(adj, vec_t, dt_rem)
-            mean = mean * mask
-            std_all = std_all * mask
-            noise = gen_noise(adj, flags)
-
-            std_all = std_all.clamp(min=1e-4)
-            step = mean + std_all * noise
-            step = torch.clamp(step, 0.0, 1.0)
-
-            rem_mask = has_remainder.view(B, 1, 1)
-            adj = torch.where(rem_mask, step, adj)
-
-        adj = torch.triu(adj, diagonal=1)
-        adj = adj + adj.transpose(-1, -2)
-
-        return adj, adj

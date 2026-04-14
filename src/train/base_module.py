@@ -13,8 +13,8 @@ from src.features.extra_features import ExtraFeatures
 from src.models.transformer_model import GraphTransformer
 from src.sample.sampler import Sampler
 from src.sde.sde import JacobiSDE
-from src.utils import build_time_schedule
-from src.visualization.plots import close_figure, plot_edge_weight_histograms
+from src.utils import build_time_schedule, gen_noise, node_flags
+from src.visualization.plots import close_figure, plot_edge_weight_histograms, plot_graph_comparison
 
 
 class DiffusionBaseModule(pl.LightningModule):
@@ -26,6 +26,7 @@ class DiffusionBaseModule(pl.LightningModule):
         node_dist,
         *,
         train_loss,
+        dataset_info: Optional[Dict] = None,
         output_dims_override: Optional[Dict[str, int]] = None,
     ):
         super().__init__()
@@ -34,6 +35,7 @@ class DiffusionBaseModule(pl.LightningModule):
         self.ref_metrics = ref_metrics
         self.node_dist = node_dist
         self.train_loss = train_loss
+        self.dataset_info = dataset_info
 
         self.dataset_name = cfg.data.data
         self._ran_sampling_metrics = False
@@ -74,7 +76,7 @@ class DiffusionBaseModule(pl.LightningModule):
             self.ema_model = None
 
         self.time_schedule_steps = build_time_schedule(
-            N=cfg.sde.num_scales,
+            num_scales=cfg.sde.num_scales,
             T=self.sde.T,
             eps=cfg.train.eps_time_train,
             kind=cfg.train.time_schedule_train,
@@ -83,13 +85,12 @@ class DiffusionBaseModule(pl.LightningModule):
 
     def _build_sde(self, cfg_sde):
         return JacobiSDE(
+            num_scales=cfg_sde.num_scales,
             alpha=cfg_sde.alpha,
             beta=cfg_sde.beta,
-            N=cfg_sde.num_scales,
             s_min=cfg_sde.s_min,
             s_max=cfg_sde.s_max,
-            eps=self.cfg.train.eps_sde_train,
-        )
+        ).to(self.device)
 
     def _get_eval_model(self):
         if self.use_ema and self.ema_model is not None:
@@ -180,13 +181,93 @@ class DiffusionBaseModule(pl.LightningModule):
     def _run_model(self, extra_pred, y, flags):
         return self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
 
+    def _perturb_data(self, data, flags, t, sde=None, sample=True):
+        if sde is None:
+            sde = self.sde
+        
+        # Check if we are using Stick-Breaking for categorical data
+        is_stick_breaking = hasattr(sde, "x_to_v")
+        
+        if is_stick_breaking:
+            # Map categorical classes (X or E) to v-space in [0,1]
+            v0 = sde.x_to_v(data)
+            v_t = self._numerical_integration(v0, flags, t, sde.base_sde)
+            data_t = sde.v_to_x(v_t)
+            # For stick-breaking models, we return the v-space variables instead
+            # of the argmax sample, as v_t is the actual state space for the SDE
+            return data_t, v_t
+        else:
+            # Binary/Continuous case (standard adjacencies)
+            data_t = self._numerical_integration(data, flags, t, sde)
+            # Binary sampling uses Bernoulli
+            data_sample = torch.bernoulli(data_t) if (sample and data.ndim == 3) else data_t
+            return data_t, data_sample
+
+    def _numerical_integration(self, data0, flags, T, sde):
+        B = data0.shape[0]
+        # Multi-dimensional mask support (Nodes [B,N,1] or Adjs [B,N,N,1])
+        if data0.ndim == 3:
+            mask = flags.unsqueeze(-1)
+        elif data0.ndim == 4:
+            mask = (flags[:, :, None] * flags[:, None, :]).unsqueeze(-1)
+        else:
+            mask = flags
+            
+        dt = 1.0 / sde.N
+        data = data0.clone()
+        
+        n_full = torch.floor(T / dt).clamp(max=sde.N - 1).long()
+        max_full = int(n_full.max().item()) if n_full.numel() > 0 else 0
+        
+        for i in range(max_full):
+            t_val = i * dt
+            vec_t = torch.full((B,), t_val, device=self.device, dtype=T.dtype)
+
+            active = n_full > i
+            if not active.any():
+                break
+
+            mean, std_all = sde.transition(data, vec_t, dt)
+            mean = mean * mask
+            std_all = std_all * mask
+            noise = gen_noise(data, flags)
+
+            std_all = std_all.clamp(min=1e-4)
+            step = mean + std_all * noise
+            step = torch.clamp(step, 1e-4, 1.0 - 1e-4)
+
+            active_mask = active.view(-1, *( (1,) * (data.ndim - 1) ))
+            data = torch.where(active_mask, step, data)
+
+        t_full = n_full.to(dtype=T.dtype) * dt
+        dt_rem = (T - t_full).clamp_min(0.0)
+        has_remainder = dt_rem > 1e-12
+
+        if has_remainder.any():
+            mean, std_all = sde.transition(data, t_full, dt_rem)
+            mean = mean * mask
+            std_all = std_all * mask
+            noise = gen_noise(data, flags)
+            std_all = std_all.clamp(min=1e-4)
+            step = mean + std_all * noise
+            step = torch.clamp(step, 1e-4, 1.0 - 1e-4)
+
+            rem_mask = has_remainder.view(-1, *( (1,) * (data.ndim - 1) ))
+            data = torch.where(rem_mask, step, data)
+            
+        return data
+
     @staticmethod
     def _extract_batch_tensors(batch) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         if isinstance(batch, (list, tuple)):
-            if len(batch) == 3:
+            # Support TensorDataset (X, adj, mask) or (X, adj, y, mask)
+            if len(batch) >= 3:
                 return batch[0], batch[1], batch[2]
             if len(batch) == 2:
                 return batch[0], batch[1], None
+        else:
+            # Support PyG DataBatch
+            return getattr(batch, "x", None), getattr(batch, "edge_index", None), getattr(batch, "mask", None)
         raise ValueError(f"Unexpected batch structure: {type(batch)}")
 
     def training_step(self, batch, batch_idx):
@@ -225,18 +306,34 @@ class DiffusionBaseModule(pl.LightningModule):
                 keep_zero_weights=False,
                 return_adjs=True,
             )
-        wandb.log({"val/sampler": wandb.Image(fig)})
-        close_figure(fig)
+        if fig is not None:
+            wandb.log({"val/sampler": wandb.Image(fig)})
+            close_figure(fig)
 
         self.sampling_metrics.reset()
-        _ = self.sampling_metrics.forward(
+        metrics = self.sampling_metrics.forward(
             samples,
             ref_metrics=self.ref_metrics,
             local_rank=self.local_rank,
             test=False,
         )
-   
+
+        # Log molecular metrics (validity, uniqueness, novelty) if returned as a dict
+        if isinstance(metrics, dict):
+            to_log = {f"val/{k}": v for k, v in metrics.items()}
+            for key, value in to_log.items():
+                self.log(key, value, prog_bar=True)
+            if wandb.run:
+                wandb.log(to_log, commit=False)
+
+        # Subclass hook — e.g. DiffusionMolModule uses this to log molecule images
+        self._on_val_samples(samples)
+
         self._maybe_log_weight_histograms(samples, adj_samples)
+
+    def _on_val_samples(self, samples):
+        """Hook called after validation sampling. Override in subclasses to log extra artefacts."""
+        pass
 
     def _training_step_impl(self, batch_idx, X, adj, observed_mask):
         raise NotImplementedError

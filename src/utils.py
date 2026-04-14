@@ -5,10 +5,10 @@ import networkx as nx
 from torch.utils.data import TensorDataset
 
 
-def build_time_schedule(N, T, eps, kind="log", power=2.0):
+def build_time_schedule(num_scales, T, eps, kind="log", power=2.0):
     """Return a decreasing timestep sequence between ``T`` and ``eps``."""
 
-    if N <= 0:
+    if num_scales <= 0:
         raise ValueError("Number of discretization steps must be positive")
 
     schedule = (kind or "log").lower()
@@ -18,10 +18,10 @@ def build_time_schedule(N, T, eps, kind="log", power=2.0):
     if eps <= 0.0 or T <= 0.0:
         raise ValueError("Both T and eps must be positive")
 
-    steps = torch.linspace(0.0, 1.0, N + 1, dtype=torch.float64)
+    steps = torch.linspace(0.0, 1.0, num_scales + 1, dtype=torch.float64)
 
     if schedule == "linear":
-        ts = torch.linspace(T, eps, N + 1, dtype=torch.float64)
+        ts = torch.linspace(T, eps, num_scales + 1, dtype=torch.float64)
     elif schedule == "power":
         weights = steps.pow(power)
         ts = T - (T - eps) * weights
@@ -29,7 +29,7 @@ def build_time_schedule(N, T, eps, kind="log", power=2.0):
         weights = 0.5 * (1.0 - torch.cos(math.pi * steps))
         ts = T - (T - eps) * weights
     elif schedule == "log":
-        ts = torch.exp(torch.linspace(math.log(T), math.log(eps), N + 1, dtype=torch.float64))
+        ts = torch.exp(torch.linspace(math.log(T), math.log(eps), num_scales + 1, dtype=torch.float64))
     elif schedule == "log_power":
         weights = steps.pow(power)
         log_T = math.log(T)
@@ -83,13 +83,17 @@ def mask_adjs(adjs, flags):
         Tensor: Masked adjacency matrices.
     """
     if flags is None:
-        flags = torch.ones((adjs.shape[0], adjs.shape[-1]), device=adjs.device)
+        return adjs
 
-    if adjs.dim() == 4:
-        flags = flags.unsqueeze(1)  # [B, 1, N]
-
-    adjs = adjs * flags.unsqueeze(-1)
-    adjs = adjs * flags.unsqueeze(-2)
+    # Support [B, N, N] and [B, N, N, K]
+    B, N = flags.shape
+    if adjs.dim() == 3:
+        # [B, N, 1] * [B, 1, N]
+        adjs = adjs * flags.unsqueeze(-1) * flags.unsqueeze(-2)
+    elif adjs.dim() == 4:
+        # [B, N, 1, 1] * [B, 1, N, 1]
+        adjs = adjs * flags.view(B, N, 1, 1) * flags.view(B, 1, N, 1)
+    
     return adjs
 
 
@@ -107,20 +111,85 @@ def mask_x(x, flags):
     return x * flags.unsqueeze(-1)
 
 
-def gen_noise(adj, flags):
+def mask_and_clamp(state, flags):
+    """
+    Unified masking and clamping for both Tensors and PlaceHolders.
+    Handles symmetry for adjacency matrices and categorical dimensions.
+    """
+    is_placeholder = hasattr(state, "X") and hasattr(state, "E")
+    
+    if not is_placeholder:
+        # Legacy/Scalar mode
+        state = state.clamp(0.0, 1.0)
+        state = mask_adjs(state, flags)
+        # Symmetrize scalar adjacency
+        if state.dim() == 3:
+            state_triu = torch.triu(state, diagonal=1)
+            state = state_triu + state_triu.transpose(-1, -2)
+        return state
+    else:
+        # Joint state (PlaceHolder)
+        E = state.E.clamp(0.0, 1.0)
+        E = mask_adjs(E, flags)
+        # Symmetrize E
+        if E.ndim == 3:
+            E_triu = torch.triu(E, diagonal=1)
+            E = E_triu + E_triu.transpose(-1, -2)
+        else:
+            # Simplex E: [B, N, N, K]
+            # Categorical E symmetry: transpose indices N, N but keep K
+            E = 0.5 * (E + E.transpose(1, 2))
+            
+        X = state.X
+        if X is not None:
+            X = X.clamp(0.0, 1.0)
+            X = mask_x(X, flags)
+            
+        from src.utils import PlaceHolder
+        return PlaceHolder(X=X, E=E, y=state.y)
+
+
+def gen_noise(state, flags):
     """
     Generate symmetric Gaussian noise respecting graph structure.
-    
-    Args:
-        adj (Tensor): Adjacency tensor [B, N, N].
-        flags (Tensor): Node flags [B, N].
-
-    Returns:
-        Tensor: Symmetric noise tensor.
+    Supports both Tensors and PlaceHolders.
     """
-    z = torch.randn_like(adj).triu(1)
-    z = z + z.transpose(-1, -2)
-    return mask_adjs(z, flags)
+    is_placeholder = hasattr(state, "X") and hasattr(state, "E")
+    
+    if not is_placeholder:
+        # Legacy/Scalar mode
+        z = torch.randn_like(state)
+        # Symmetrize if 3D square (adjacency)
+        if z.ndim == 3 and z.shape[1] == z.shape[2]:
+            z = torch.triu(z, diagonal=1)
+            z = z + z.transpose(-1, -2)
+            return mask_adjs(z, flags)
+        # Symmetrize if 4D categorical edge [B, N, N, K]
+        elif z.ndim == 4 and z.shape[1] == z.shape[2]:
+            z = 0.5 * (z + z.transpose(1, 2))
+            return mask_adjs(z, flags)
+        else:
+            return mask_x(z, flags)
+    else:
+        # Joint state (PlaceHolder)
+        # Noise for E (Adjacency or Bond types)
+        ze = torch.randn_like(state.E)
+        if ze.ndim == 3:
+            ze = torch.triu(ze, diagonal=1)
+            ze = ze + ze.transpose(-1, -2)
+        elif ze.ndim == 4:
+            # Simplex E: [B, N, N, K]
+            ze = 0.5 * (ze + ze.transpose(1, 2))
+        ze = mask_adjs(ze, flags)
+        
+        # Noise for X (Node features)
+        zx = None
+        if state.X is not None:
+            zx = torch.randn_like(state.X)
+            zx = mask_x(zx, flags)
+            
+        from src.utils import PlaceHolder
+        return PlaceHolder(X=zx, E=ze, y=state.y)
 
 
 def quantize(adjs, thr=0.5):
@@ -320,11 +389,23 @@ class PlaceHolder:
         self.E = E
         self.y = y
 
+    def to(self, *args, **kwargs):
+        if self.X is not None:
+            self.X = self.X.to(*args, **kwargs)
+        if self.E is not None:
+            self.E = self.E.to(*args, **kwargs)
+        if self.y is not None:
+            self.y = self.y.to(*args, **kwargs)
+        return self
+
     def type_as(self, x: torch.Tensor):
         """Changes the device and dtype of X, E, y."""
-        self.X = self.X.type_as(x)
-        self.E = self.E.type_as(x)
-        self.y = self.y.type_as(x)
+        if self.X is not None:
+            self.X = self.X.type_as(x)
+        if self.E is not None:
+            self.E = self.E.type_as(x)
+        if self.y is not None:
+            self.y = self.y.type_as(x)
         return self
 
     def to_device(self, device):

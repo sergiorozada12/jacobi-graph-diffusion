@@ -8,7 +8,7 @@ from src.visualization.plots import plot_graph_grid, plot_weighted_adj_and_graph
 
 
 class Sampler:
-    def __init__(self, cfg, model, node_dist=None):
+    def __init__(self, cfg, model, node_dist=None, dataset_info=None):
         self.cfg = cfg
         self.device = torch.device(cfg.general.device)
         self.max_num_nodes = cfg.data.max_node_num
@@ -17,16 +17,22 @@ class Sampler:
 
         self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
         self.model = model.to(self.device)
+        self.dataset_info = dataset_info
         self.sde = self._get_sde(self.cfg.sde)
         self.solver = self._get_solver()
 
         self.node_dist = node_dist
         
     def _get_sde(self, cfg_sde):
+        # We check if the model has attached SDEs (which happens in base_module)
+        if hasattr(self.model, "sde_E") and self.model.sde_E is not None:
+            return self.model.sde_E
+        
+        from src.sde.sde import JacobiSDE
         return JacobiSDE(
             alpha=cfg_sde.alpha,
             beta=cfg_sde.beta,
-            N=cfg_sde.num_scales,
+            num_scales=cfg_sde.num_scales,
             s_min=cfg_sde.s_min,
             s_max=cfg_sde.s_max,
             eps=cfg_sde.eps_sde,
@@ -53,6 +59,7 @@ class Sampler:
             eps_score=self.cfg.sde.eps_score,
             use_corrector=self.cfg.sampler.use_corrector,
             predictor_type=getattr(self.cfg.sampler, "predictor", "em"),
+            dataset_info=self.dataset_info,
             time_schedule=self.cfg.sampler.time_schedule,
             time_schedule_power=self.cfg.sampler.time_schedule_power,
             use_sampled_features=self.use_sampled_features,
@@ -110,41 +117,48 @@ class Sampler:
     ):
         num_rounds = math.ceil(self.cfg.sampler.test_graphs / self.cfg.data.batch_size)
         generated = []
-        first_adj = None
-        first_flags = None
-        collected_adjs = []
-        for _ in range(num_rounds):
-        # for _ in range(1):
+        from src.utils import PlaceHolder
+        collected_data = []
+        is_joint_flag = False
+        
+        for r in range(num_rounds):
             flags = self._make_flags(use_node_dist=use_node_dist)
-            adj, _ = self.solver.solve(flags)
-            if self.score_mode == "weighted":
-                samples = adj.clamp(0.0, 1.0)
+            state, _ = self.solver.solve(flags)
+            
+            if not isinstance(state, PlaceHolder):
+                adj = state
+                if self.score_mode == "weighted":
+                     samples = adj.clamp(0.0, 1.0)
+                else:
+                     samples = quantize(adj)
+                
+                graphs = adjs_to_graphs(
+                    samples,
+                    is_cuda=self.device.type != 'cpu',
+                    keep_isolates=keep_isolates,
+                    nodelist=nodelist,
+                    keep_zero_weights=keep_zero_weights,
+                )
+                generated.extend(graphs)
+                collected_data.append(samples.detach().cpu())
             else:
-                samples = quantize(adj)
-            collected_adjs.append(samples.detach().cpu())
-            if first_adj is None:
-                first_adj = samples[0].detach().cpu()
-                first_flags = flags[0].detach().cpu()
-            graphs = adjs_to_graphs(
-                samples,
-                is_cuda=self.device.type != 'cpu',
-                keep_isolates=keep_isolates,
-                nodelist=nodelist,
-                keep_zero_weights=keep_zero_weights,
-            )
-            generated.extend(graphs)
-            #for graph in graphs:
-            #    largest_cc = max(nx.connected_components(graph), key=len)
-            #    generated.append(graph.subgraph(largest_cc).copy())
-        if self.score_mode == "weighted" and first_adj is not None:
-            fig = plot_weighted_adj_and_graph(
-                first_adj,
-                flags=first_flags,
-                dataset_name=self.cfg.data.data,
-            )
+                is_joint_flag = True
+                # Joint mode (Molecule)
+                # state is a PlaceHolder with X and E (simplex)
+                # Quantize: argmax for bond types and atom types
+                E_idx = torch.argmax(state.E, dim=-1) # [B, N, N] contains 0..4
+                X_idx = torch.argmax(state.X, dim=-1) # [B, N]
+                
+                samples = PlaceHolder(X=X_idx, E=E_idx, y=None)
+                generated.append(samples) # We return PlaceHolders for molecules to be built by Metrics
+                collected_data.append(samples)
+
+        if not is_joint_flag:
+             fig = self.plot_sampled_graphs(generated)
         else:
-            fig = self.plot_sampled_graphs(generated)
+             # Molecules have custom plotting via metrics module usually
+             fig = None 
+
         if return_adjs:
-            adjs_stacked = torch.cat(collected_adjs, dim=0)
-            return generated, fig, adjs_stacked
+            return generated, fig, collected_data
         return generated, fig

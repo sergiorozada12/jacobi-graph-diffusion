@@ -183,6 +183,10 @@ def compute_ratios(gen_metrics, ref_metrics, metrics_keys):
                 print(f"WARNING: Reference {key} is 0. Skipping its ratio.")
         if len(ratios) > 0:
             ratios["average_ratio"] = sum(ratios.values()) / len(ratios)
+            # Add average_ratio_wo_wavelet
+            ratios_wo_wavelet = [v for k, v in ratios.items() if k != "wavelet_ratio" and k != "average_ratio"]
+            if len(ratios_wo_wavelet) > 0:
+                ratios["average_ratio_wo_wavelet"] = sum(ratios_wo_wavelet) / len(ratios_wo_wavelet)
         else:
             ratios["average_ratio"] = -1
             print(f"WARNING: no ratio being saved.")

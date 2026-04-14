@@ -362,6 +362,13 @@ def main():
         def get_ratios_dict(m):
             d = {k + "_ratio": m.get(k + "_ratio", 0.0) for k in base_keys}
             d["average_ratio"] = m.get("average_ratio", 0.0)
+
+            # Add average_ratio_wo_wavelet
+            other_ratios = [d[k + "_ratio"] for k in base_keys if k != "wavelet"]
+            if other_ratios:
+                d["average_ratio_wo_wavelet"] = sum(other_ratios) / len(other_ratios)
+            else:
+                d["average_ratio_wo_wavelet"] = 0.0
             return d
 
         m_dict, avg_mmd = get_metrics_dict(metrics)

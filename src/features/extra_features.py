@@ -8,16 +8,16 @@ class ExtraFeatures:
         self.ncycles = NodeCycleFeatures()
         self.features_type = extra_features_type
         self.rrwp_steps = rrwp_steps
-        self.RRWP = RRWPFeatures()
-        self.RWP = RRWPFeatures(normalize=False)
-        if extra_features_type in ["eigenvalues", "all"]:
-            self.eigenfeatures = EigenFeatures(mode=extra_features_type)
+        self.RRWP = RRWPFeatures(k=rrwp_steps)
+        self.RWP = RRWPFeatures(k=rrwp_steps, normalize=False)
+        if extra_features_type in ["eigenvalues", "all", "molecules"]:
+            self.eigenfeatures = EigenFeatures(mode=extra_features_type if extra_features_type != "molecules" else "eigenvalues")
 
     def __call__(self, E_t, node_mask):
         n = node_mask.sum(dim=1).unsqueeze(1) / self.max_n_nodes
-        x_cycles, y_cycles = self.ncycles(E_t, node_mask)  # (bs, n_cycles)
 
         if self.features_type == "cycles":
+            x_cycles, y_cycles = self.ncycles(E_t, node_mask)
             E = E_t.clone().detach()
             extra_edge_attr = torch.zeros((*E.shape[:-1], 0)).type_as(E)
             return utils.PlaceHolder(
@@ -25,6 +25,7 @@ class ExtraFeatures:
             )
 
         elif self.features_type == "eigenvalues":
+            x_cycles, y_cycles = self.ncycles(E_t, node_mask)
             eigenfeatures = self.eigenfeatures(E_t, node_mask)
             E = E_t.clone().detach()
             extra_edge_attr = torch.zeros((*E.shape[:-1], 0)).type_as(E)
@@ -36,10 +37,9 @@ class ExtraFeatures:
             )
 
         elif self.features_type == "rrwp":
+            x_cycles, y_cycles = self.ncycles(E_t, node_mask)
             E = E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
-            rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
-            diag_index = torch.arange(rrwp_edge_attr.shape[1])
-            rrwp_node_attr = rrwp_edge_attr[:, diag_index, diag_index, :]
+            rrwp_node_attr, rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
             self.eigenfeatures = EigenFeatures(mode="all")
 
             return utils.PlaceHolder(
@@ -50,17 +50,19 @@ class ExtraFeatures:
 
         elif self.features_type == "rrwp_double":
             E = E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
-            rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
-            rrwp_edge_attr_wo_norm = self.RWP(E, k=self.rrwp_steps)
+            rrwp_node_attr, rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
+            rrwp_node_attr_wo_norm, rrwp_edge_attr_wo_norm = self.RWP(E, k=self.rrwp_steps)
 
             # Normalize the rrwp_edge_attr_wo_norm
             max_value = rrwp_edge_attr_wo_norm.max(dim=1, keepdim=True).values
             max_value = max_value.max(dim=2, keepdim=True).values
             rrwp_edge_attr_wo_norm = rrwp_edge_attr_wo_norm / max_value
+            
+            max_value_n = rrwp_node_attr_wo_norm.max(dim=1, keepdim=True).values
+            rrwp_node_attr_wo_norm = rrwp_node_attr_wo_norm / max_value_n
 
             rrwp_edge_attr = torch.cat((rrwp_edge_attr, rrwp_edge_attr_wo_norm), dim=-1)
-            diag_index = torch.arange(rrwp_edge_attr.shape[1])
-            rrwp_node_attr = rrwp_edge_attr[:, diag_index, diag_index, :]
+            rrwp_node_attr = torch.cat((rrwp_node_attr, rrwp_node_attr_wo_norm), dim=-1)
             # self.eigenfeatures = EigenFeatures(mode='all')
 
             return utils.PlaceHolder(
@@ -71,9 +73,7 @@ class ExtraFeatures:
 
         elif self.features_type == "rrwp_only":
             E = E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
-            rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
-            diag_index = torch.arange(rrwp_edge_attr.shape[1])
-            rrwp_node_attr = rrwp_edge_attr[:, diag_index, diag_index, :]
+            rrwp_node_attr, rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
 
             return utils.PlaceHolder(
                 X=rrwp_node_attr,
@@ -82,14 +82,12 @@ class ExtraFeatures:
             )
 
         elif self.features_type == "rrwp_comp":
+            x_cycles, y_cycles = self.ncycles(E_t, node_mask)
             E = E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
-            rrwp_edge_attr = self.RRWP(E, k=int(self.rrwp_steps / 2))
-            diag_index = torch.arange(rrwp_edge_attr.shape[1])
-            rrwp_node_attr = rrwp_edge_attr[:, diag_index, diag_index, :]
+            rrwp_node_attr, rrwp_edge_attr = self.RRWP(E, k=int(self.rrwp_steps / 2))
 
             comp_E = 1 - E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
-            comp_rrwp_edge_attr = self.RRWP(comp_E, k=int(self.rrwp_steps / 2))
-            comp_rrwp_node_attr = comp_rrwp_edge_attr[:, diag_index, diag_index, :]
+            comp_rrwp_node_attr, comp_rrwp_edge_attr = self.RRWP(comp_E, k=int(self.rrwp_steps / 2))
 
             return utils.PlaceHolder(
                 X=torch.cat((rrwp_node_attr, comp_rrwp_node_attr), dim=-1),
@@ -97,7 +95,33 @@ class ExtraFeatures:
                 y=torch.hstack((n, y_cycles)),
             )
 
+        if self.features_type == "molecules":
+            # Structural features (Cycles) for y
+            _, y_cycles = self.ncycles(E_t, node_mask)
+            
+            # RRWP features (Core structural)
+            rrwp_node_attr, rrwp_edge_attr = self.RRWP(E_t, node_mask)
+            
+            # Spectral features (Eigenvalues/Eigenvectors)
+            adj_spectral = E_t.clone().detach()
+            if adj_spectral.ndim == 4:
+                adj_spectral = adj_spectral[..., 1:].sum(dim=-1).float()
+            
+            eigenfeatures = self.eigenfeatures(adj_spectral, node_mask)
+            n_components, batch_eigenvalues = eigenfeatures
+
+            # y: n(1) + Cycles(4) = 5
+            # We add weight and t in the trainer to get 7
+            y_model = torch.cat((n, y_cycles), dim=-1)
+
+            return utils.PlaceHolder(
+                X=rrwp_node_attr,
+                E=rrwp_edge_attr,
+                y=y_model,
+            )
+
         elif self.features_type == "all":
+            x_cycles, y_cycles = self.ncycles(E_t, node_mask)
             eigenfeatures = self.eigenfeatures(E_t, node_mask)
             E = E_t.clone().detach()
             extra_edge_attr = torch.zeros((*E.shape[:-1], 0)).type_as(E)
@@ -123,29 +147,40 @@ class RRWPFeatures:
         self.k = k
         self.normalize = normalize
 
-    def __call__(self, E, k=None):
+    def __call__(self, E, node_mask=None, k=None):
         k = k or self.k
+        
+        if E.ndim == 4:
+            E = E[..., 1:].sum(dim=-1).float()
+            
+        
+        bs, n, _ = E.shape
+        device = E.device
 
-        (
-            bs,
-            n,
-            _,
-        ) = E.shape
         if self.normalize:
-            degree = torch.zeros(bs, n, n, device=E.device)
-            to_fill = 1 / (E.sum(dim=-1).float())
-            to_fill[E.sum(dim=-1).float() == 0] = 0
-            degree = torch.diagonal_scatter(degree, to_fill, dim1=1, dim2=2)
-            E = degree @ E
+            # Compute random walk transition matrix P = D^-1 A
+            degree = E.sum(dim=-1)
+            d_inv = 1.0 / degree
+            d_inv[torch.isinf(d_inv)] = 0.0
+            d_inv[torch.isnan(d_inv)] = 0.0
+            D_inv = torch.diag_embed(d_inv)
+            P = D_inv @ E
+        else:
+            P = E
 
-        id = torch.eye(n, device=E.device).unsqueeze(0).repeat(bs, 1, 1)
-        rrwp_list = [id]
+        # Identity power
+        P_i = torch.eye(n, device=device).unsqueeze(0).repeat(bs, 1, 1)
+        
+        node_features = [torch.diagonal(P_i, dim1=-2, dim2=-1)]
+        edge_features = [P_i]
 
         for i in range(k - 1):
-            cur_rrwp = rrwp_list[-1] @ E
-            rrwp_list.append(cur_rrwp)
+            P_i = P_i @ P
+            node_features.append(torch.diagonal(P_i, dim1=-2, dim2=-1))
+            edge_features.append(P_i)
 
-        return torch.stack(rrwp_list, -1)
+        # Result shapes: [B, N, K] and [B, N, N, K]
+        return torch.stack(node_features, dim=-1), torch.stack(edge_features, dim=-1)
 
 
 class NodeCycleFeatures:
@@ -153,11 +188,22 @@ class NodeCycleFeatures:
         self.kcycles = KNodeCycles()
 
     def __call__(self, E_t, node_mask):
-        adj_matrix = E_t.clone().detach()[..., 1:].sum(dim=-1).float()
+        if E_t.ndim == 3:
+            # Legacy or unexpected 3D input [B, N, N]
+            adj_matrix = E_t.clone().detach().float()
+        elif E_t.ndim == 4:
+            # Expected 4D probability input [B, N, N, K]
+            adj_matrix = E_t.clone().detach()[..., 1:].sum(dim=-1).float()
+        else:
+            # Unexpected shape (e.g. [B, N, K]), return zero cycles
+            bs, n = E_t.shape[:2]
+            device = E_t.device
+            return torch.zeros(bs, n, 3, device=device), torch.zeros(bs, 4, device=device)
 
         x_cycles, y_cycles = self.kcycles.k_cycles(
-            adj_matrix=adj_matrix
-        )  # (bs, n_cycles)
+            adj_matrix=adj_matrix,
+        )
+        # (bs, n_cycles)
         x_cycles = x_cycles.type_as(adj_matrix) * node_mask.unsqueeze(-1)
         # Avoid large values when the graph is dense
         x_cycles = x_cycles / 10
@@ -179,11 +225,16 @@ class EigenFeatures:
     def __call__(self, E_t, node_mask):
         E_t = E_t.clone().detach()
         mask = node_mask
-        A = E_t[..., 1:].sum(dim=-1).float() * mask.unsqueeze(1) * mask.unsqueeze(2)
+        if E_t.ndim == 4:
+            A = E_t[..., 1:].sum(dim=-1).float()
+        else:
+            A = E_t.float()
+        
+        A = A * mask.unsqueeze(1) * mask.unsqueeze(2)
         # L = compute_laplacian(A, normalize="sym")
         L = compute_laplacian(A, normalize=False)
         mask_diag = 2 * L.shape[-1] * torch.eye(A.shape[-1]).type_as(L).unsqueeze(0)
-        mask_diag = mask_diag * (~mask.unsqueeze(1)) * (~mask.unsqueeze(2))
+        mask_diag = mask_diag * (~mask.bool().unsqueeze(1)) * (~mask.bool().unsqueeze(2))
         L = L * mask.unsqueeze(1) * mask.unsqueeze(2) + mask_diag
 
         if self.mode == "eigenvalues":

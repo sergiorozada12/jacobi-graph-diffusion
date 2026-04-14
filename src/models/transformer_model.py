@@ -262,12 +262,14 @@ class GraphTransformer(nn.Module):
         output_dims,
         act_fn_in,
         act_fn_out,
+        sde_X=None,
     ):
         super().__init__()
         self.n_layers = n_layers
         self.out_dim_X = output_dims["X"]
         self.out_dim_E = output_dims["E"]
         self.out_dim_y = output_dims["y"]
+        self.sde_X = sde_X
 
         self.mlp_in_X = nn.Sequential(
             nn.Linear(input_dims["X"], hidden_mlp_dims["X"]),
@@ -352,9 +354,12 @@ class GraphTransformer(nn.Module):
         E = self.mlp_out_E(E)
         y = self.mlp_out_y(y)
 
-        X = X + X_to_out
-        E = (E + E_to_out) * diag_mask
-        y = y + y_to_out
+        if X.shape[-1] == X_to_out.shape[-1]:
+            X = X + X_to_out
+        if E.shape[-1] == E_to_out.shape[-1]:
+            E = (E + E_to_out) * diag_mask
+        if y.shape[-1] == y_to_out.shape[-1]:
+            y = y + y_to_out
 
         E = 1 / 2 * (E + torch.transpose(E, 1, 2))
 
