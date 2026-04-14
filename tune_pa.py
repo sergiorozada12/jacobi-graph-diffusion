@@ -29,12 +29,13 @@ def main():
         cfg.model.output_dims = dict(cfg.model.score_output_dims)
     
     search_space = SearchSpace(
-        order=[100],
+        order=[30],
         sample_target=[True],
-        eps_sde=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
+        eps_sde=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
         eps_score=[1e-10],
-        time_schedule=["log"],
-        eps_time=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
+        time_schedule=["cosine"],
+        predictor=["milstein"],
+        eps_time=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
         use_corrector=[False],
         snr=[2.0, 1.0, 0.1, 0.01, 0.001, 0.0001],
         scale_eps=[2.0, 1.0, 0.1, 0.01, 0.001, 0.0001],
@@ -42,7 +43,7 @@ def main():
     )
 
     settings = TuningSettings(
-        objective="pa_acc",
+        objective="average_ratio",
         metric_key=None,
         metrics_alias=None,
         max_trials=None,

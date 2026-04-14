@@ -13,14 +13,14 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-5
-    time_schedule: str = "log"
+    eps_time: float = 0.0001 # 0.002 #1e-5
+    time_schedule: str = "cosine"
     time_schedule_power: float = 2.0
     snr: float = 1.0
     scale_eps: float = 2.0
     n_steps: int = 2
     num_nodes: int = 60
-    test_graphs: int = 100
+    test_graphs: int = 35
     use_corrector: bool = False
     predictor: str = "milstein"  # "em" or "milstein" or "heun"
 
@@ -97,9 +97,9 @@ class SDEConfig:
     num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 100
+    order: int = 30 # 30
     sample_target: bool = True
-    eps_sde: float = 0.001
+    eps_sde: float = 1e-9 # 0.001 # 1e-5
     eps_score: float = 1e-10
 
 

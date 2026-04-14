@@ -3,7 +3,7 @@ from typing import Optional
 
 @dataclass
 class GeneralConfig:
-    seed: int = 107
+    seed: int = 108
     use_wandb: bool = True
     save_path: str = "results/"
     device: str = "cuda"
@@ -13,7 +13,7 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-8 # 1e-8
+    eps_time: float = 1e-8 # 1e-11 works good with large number of params
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
     snr: float = 0.01
@@ -22,7 +22,7 @@ class SamplerConfig:
     num_nodes: int = 80
     test_graphs: int = 32
     use_corrector: bool = False
-    predictor: str = "em"  # "em" or "milstein" or "heun"
+    predictor: str = "em"  # "em" or "milstein" or "heun" - heun or em good  for 180 but acc 0
 
 @dataclass
 class DataConfig:
@@ -91,12 +91,12 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1_000 # Looks good with 2000 and 3000 improves
+    num_scales: int = 1000 # Looks better with 2000 and 3000 improves
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 100
+    order: int = 100 # Looks 30 improves for SBM
     sample_target: bool = True
-    eps_sde: float = 1e-7 # 1e-7
+    eps_sde: float = 1e-6 # 1e-7 becomes stable
     eps_score: float = 1e-10
 
 @dataclass

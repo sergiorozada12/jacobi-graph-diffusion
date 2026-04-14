@@ -1,4 +1,5 @@
 import argparse
+import json
 from omegaconf import OmegaConf
 from pathlib import Path
 import torch
@@ -31,6 +32,30 @@ def parse_args():
         type=int,
         default=None,
         help="Maximum number of nodes to sample. Requires --min-nodes. Defaults to dataset distribution.",
+    )
+    parser.add_argument(
+        "--save-graphs-path",
+        type=str,
+        default=None,
+        help="Optional path where newly generated graphs will be saved as a pickle.",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="Number of graphs to sample. Overrides cfg.sampler.test_graphs.",
+    )
+    parser.add_argument(
+        "--json-out",
+        type=str,
+        default=None,
+        help="Optional path to save results in JSON format.",
+    )
+    parser.add_argument(
+        "--kernel",
+        type=str,
+        default="emd",
+        help="Kernel name to store in JSON.",
     )
     return parser.parse_args()
 
@@ -145,13 +170,19 @@ def main():
     model = model.to(cfg.general.device)
     model.eval()
 
-    pl.seed_everything(cfg.general.seed, workers=True)
-    cfg.sampler.test_graphs = 2 # Temporary for fast verification
+    if args.num_samples is not None:
+        cfg.sampler.test_graphs = args.num_samples
+    
     sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
     samples, fig = sampler.sample()
 
-    save_path = Path("samples/test.png")
+    save_path = Path("samples/test_pa.png")
     save_figure(fig, save_path, dpi=300)
+    
+    save_graphs_path = args.save_graphs_path if args.save_graphs_path else "samples/test_graphs.pkl"
+    from src.dataset.utils import save_graphs_pickle
+    save_graphs_pickle(samples, save_graphs_path)
+    print(f"Saved generated graphs to {save_graphs_path}")
 
     sampling_metrics.reset()
     metrics = sampling_metrics.forward(
@@ -187,6 +218,67 @@ def main():
         for k in metrics_specific:
             if '_ratio' in k:
                 print(f"{k} - {metrics_specific[k]}")
+
+    if args.json_out:
+        base_keys = ["degree", "clustering", "orbit", "spectre", "wavelet"]
+        
+        def get_metrics_dict(m):
+            d = {k: m.get(k, 0.0) for k in base_keys}
+            avg = sum(d.values()) / len(base_keys) if base_keys else 0.0
+            d["average_mmd"] = avg
+            return d, avg
+
+        def get_ratios_dict(m):
+            d = {k + "_ratio": m.get(k + "_ratio", 0.0) for k in base_keys}
+            d["average_ratio"] = m.get("average_ratio", 0.0)
+            return d
+
+        m_dict, avg_mmd = get_metrics_dict(metrics)
+        m_ratios = get_ratios_dict(metrics)
+        
+        entry = {
+            "size": args.min_nodes if args.min_nodes is not None else cfg.sampler.num_nodes,
+            "accuracy": metrics.get("pa_acc", 0.0),
+            "acc_extra": {},
+            "average_mmd": avg_mmd,
+            "metrics": m_dict,
+            "metrics_ratio": m_ratios,
+        }
+        
+        if metrics_specific is not None:
+            ms_dict, msa_mmd = get_metrics_dict(metrics_specific)
+            ms_ratios = get_ratios_dict(metrics_specific)
+            entry["size_specific_metrics"] = ms_dict
+            entry["size_specific_metrics_ratio"] = ms_ratios
+
+        # Load existing or create new
+        out_path = Path(args.json_out)
+        data = {"dataset_name": cfg.data.data, "kernel": args.kernel, "entries": []}
+        if out_path.exists():
+            with open(out_path, "r") as f:
+                try:
+                    data = json.load(f)
+                except Exception as e:
+                    print(f"Warning: could not load existing JSON at {out_path}: {e}")
+
+        # Update or append
+        updated = False
+        for i, e in enumerate(data.get("entries", [])):
+            if e["size"] == entry["size"]:
+                data["entries"][i] = entry
+                updated = True
+                break
+        if not updated:
+            if "entries" not in data:
+                data["entries"] = []
+            data["entries"].append(entry)
+        
+        data["entries"].sort(key=lambda x: x["size"])
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(data, f, indent=4)
+        print(f"Results saved to {out_path}")
 
 if __name__ == "__main__":
     main()

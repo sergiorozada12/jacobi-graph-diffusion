@@ -31,7 +31,7 @@ class SamplerConfig:
 class DataConfig:
     dir: str = "data"
     data: str = "tree_graphon"
-    batch_size: int = 100  # 32
+    batch_size: int = 32  # 32
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2

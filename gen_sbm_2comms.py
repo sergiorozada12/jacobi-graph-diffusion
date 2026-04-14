@@ -1,4 +1,5 @@
 import argparse
+import json
 from omegaconf import OmegaConf
 from pathlib import Path
 from typing import Any, Dict
@@ -100,6 +101,18 @@ def parse_args():
         help="Disable size-matched reference ratio computation.",
     )
     parser.set_defaults(average_ratio_to_size_ref=True)
+    parser.add_argument(
+        "--json-out",
+        type=str,
+        default=None,
+        help="Optional path to save results in JSON format.",
+    )
+    parser.add_argument(
+        "--kernel",
+        type=str,
+        default="emd",
+        help="Kernel name to store in JSON.",
+    )
     return parser.parse_args()
 
 
@@ -162,9 +175,11 @@ def _print_ratio_block(metrics, suffix="", title="Ratios"):
     print('------------------------------------------------------------------------------------')
     print(title)
     print('------------------------------------------------------------------------------------')
-    for k in metrics:
-        if not k.endswith('_ratio' + suffix) and not k.endswith('average_ratio' + suffix):
-            continue
+    keys = sorted([k for k in metrics if k.endswith('_ratio' + suffix) or k.endswith('average_ratio' + suffix)])
+    if not keys:
+        print("No ratios available in this block.")
+        return
+    for k in keys:
         print(f"{k} - {metrics[k]}")
 
 
@@ -275,27 +290,46 @@ def main():
         save_graphs_pickle(samples, save_graphs_path)
         print(f"Saved generated graphs to {save_graphs_path}")
 
-    extra_ref_metrics = None
+    extra_sampling_metrics = None
     if args.average_ratio_to_size_ref:
-        if args.min_nodes is None or args.max_nodes is None:
-            raise ValueError("Size-ref ratio computation requires both --min-nodes and --max-nodes.")
-        if args.min_nodes != args.max_nodes:
-            raise ValueError("Size-ref ratio computation requires --min-nodes and --max-nodes to be equal.")
-        size_ref_metrics = load_size_ref_metrics(
-            cfg=cfg,
-            metrics_cls=SBMSamplingMetrics,
-            target_nodes=args.min_nodes,
-        )
-        extra_ref_metrics = {"size_ref": size_ref_metrics}
+        if args.min_nodes is not None and args.max_nodes is not None and args.min_nodes == args.max_nodes:
+            try:
+                size_ref_metrics, size_ref_sampling_metrics = load_size_ref_metrics(
+                    cfg=cfg,
+                    metrics_cls=SBMSamplingMetrics,
+                    target_nodes=args.min_nodes,
+                )
+                extra_sampling_metrics = {
+                    "size_ref": (size_ref_metrics, size_ref_sampling_metrics)
+                }
+            except Exception as e:
+                print(f"INFO: Could not load size-matched reference metrics: {e}")
+                print("      Only training-distribution ratios will be reported.")
+                args.average_ratio_to_size_ref = False
+        else:
+            if args.min_nodes != args.max_nodes:
+                 print("INFO: --min-nodes != --max-nodes. Skipping size-matched reference comparison.")
+            args.average_ratio_to_size_ref = False
 
     sampling_metrics.reset()
     metrics = sampling_metrics.forward(
         samples,
         ref_metrics=ref_metrics,
-        extra_ref_metrics=extra_ref_metrics,
         local_rank=0,
         test=True,
     )
+
+    metrics_extra = {}
+    if extra_sampling_metrics:
+        for suffix, (extra_metrics, extra_module) in extra_sampling_metrics.items():
+            extra_module.reset()
+            res = extra_module.forward(
+                samples,
+                ref_metrics=extra_metrics,
+                local_rank=0,
+                test=True,
+            )
+            metrics_extra[suffix] = res
 
     print('------------------------------------------------------------------------------------')
     for k in ref_metrics['val']:
@@ -303,13 +337,80 @@ def main():
 
     _print_ratio_block(metrics, title="Training-distribution ratios")
 
-    if extra_ref_metrics is not None:
+    if extra_sampling_metrics is not None and "size_ref" in metrics_extra:
+        size_ref_res = metrics_extra["size_ref"]
+        # We need the reference values from the dict we loaded
+        ref_vals = extra_sampling_metrics["size_ref"][0]
+        
         print('------------------------------------------------------------------------------------')
         print('Size-matched reference comparison')
         print('------------------------------------------------------------------------------------')
-        for k in size_ref_metrics['val']:
-            print(f"{k} size-ref / gen. - {size_ref_metrics['val'][k]} / {metrics[k]}")
-        _print_ratio_block(metrics, suffix="_size_ref", title="Size-matched reference ratios")
+        for k in sorted(ref_vals['val'].keys()):
+            if k in size_ref_res:
+                print(f"{k} size-ref / gen. - {ref_vals['val'][k]} / {size_ref_res[k]}")
+        _print_ratio_block(size_ref_res, title="Size-matched reference ratios")
+
+    if args.json_out:
+        base_keys = ["degree", "clustering", "orbit", "spectre", "wavelet"]
+        
+        def get_metrics_dict(m):
+            d = {k: m.get(k, 0.0) for k in base_keys}
+            avg = sum(d.values()) / len(base_keys) if base_keys else 0.0
+            d["average_mmd"] = avg
+            return d, avg
+
+        def get_ratios_dict(m):
+            d = {k + "_ratio": m.get(k + "_ratio", 0.0) for k in base_keys}
+            d["average_ratio"] = m.get("average_ratio", 0.0)
+            return d
+
+        m_dict, avg_mmd = get_metrics_dict(metrics)
+        m_ratios = get_ratios_dict(metrics)
+        
+        entry = {
+            "size": args.min_nodes if args.min_nodes is not None else cfg.sampler.num_nodes,
+            "accuracy": metrics.get("sbm_acc", 0.0),
+            "acc_extra": {},
+            "average_mmd": avg_mmd,
+            "metrics": m_dict,
+            "metrics_ratio": m_ratios,
+        }
+        
+        if "size_ref" in metrics_extra:
+            ms_metrics = metrics_extra["size_ref"]
+            ms_dict, msa_mmd = get_metrics_dict(ms_metrics)
+            ms_ratios = get_ratios_dict(ms_metrics)
+            entry["size_specific_metrics"] = ms_dict
+            entry["size_specific_metrics_ratio"] = ms_ratios
+
+        # Load existing or create new
+        out_path = Path(args.json_out)
+        data = {"dataset_name": cfg.data.data, "kernel": args.kernel, "entries": []}
+        if out_path.exists():
+            with open(out_path, "r") as f:
+                try:
+                    data = json.load(f)
+                except Exception as e:
+                    print(f"Warning: could not load existing JSON at {out_path}: {e}")
+
+        # Update or append
+        updated = False
+        for i, e in enumerate(data.get("entries", [])):
+            if e["size"] == entry["size"]:
+                data["entries"][i] = entry
+                updated = True
+                break
+        if not updated:
+            if "entries" not in data:
+                data["entries"] = []
+            data["entries"].append(entry)
+        
+        data["entries"].sort(key=lambda x: x["size"])
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(data, f, indent=4)
+        print(f"Results saved to {out_path}")
 
 
 if __name__ == "__main__":

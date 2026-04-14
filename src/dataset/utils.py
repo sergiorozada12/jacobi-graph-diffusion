@@ -17,7 +17,15 @@ class DistributionNodes:
 
 
 def resolve_size_ref_dataset_path(data_dir, dataset_name, target_nodes):
-    return Path(data_dir) / "size_ref" / dataset_name / f"{dataset_name}_{target_nodes}.pkl"
+    # Try standard size_ref subfolder first
+    p1 = Path(data_dir) / "size_ref" / dataset_name / f"{dataset_name}_{target_nodes}.pkl"
+    if p1.exists():
+        return p1
+    # Try direct data folder (as used by some tuning scripts)
+    p2 = Path(data_dir) / f"{dataset_name}_{target_nodes}.pkl"
+    if p2.exists():
+        return p2
+    return p1
 
 
 def save_graphs_pickle(graphs, output_path):
@@ -110,10 +118,24 @@ def load_size_ref_metrics(cfg, metrics_cls, target_nodes):
     ref_datamodule = SpectreDatasetModule(ref_cfg)
     ref_datamodule.setup()
     ref_sampling_metrics = metrics_cls(ref_datamodule)
-    cache_name = f"{cfg.data.data}_size_{target_nodes}"
+    
+    # Try to find existing cache with multiple possible names
+    metrics_dir = Path(cfg.data.dir) / "ref_metrics"
+    possible_names = [
+        f"{cfg.data.data}_{target_nodes}",       # Format used by run_tuning
+        f"{cfg.data.data}_size_{target_nodes}"    # Format used by load_size_ref_metrics
+    ]
+    
+    cache_name = possible_names[1] # Default to the size_ variant for new computations
+    for name in possible_names:
+        metrics_path = metrics_dir / f"ref_metrics_{name}.pt"
+        if metrics_path.exists():
+            cache_name = name
+            break
+
     size_ref_metrics = compute_reference_metrics(
         ref_datamodule,
         ref_sampling_metrics,
         cache_name=cache_name,
     )
-    return size_ref_metrics
+    return size_ref_metrics, ref_sampling_metrics
