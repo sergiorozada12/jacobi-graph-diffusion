@@ -29,6 +29,7 @@ class JacobiScore:
         self.eps = eps_score
         self.model = model
         self.score_mode = score_mode
+        self.dataset_info = dataset_info
         self.feature_extractor = ExtraFeatures(
             extra_features_type=extra_features,
             rrwp_steps=rrwp_steps,
@@ -213,36 +214,57 @@ class JacobiScore:
         # Structural features always come from edges/bonds (A_t_input)
         extra_structural = self.feature_extractor(A_t_input, flags)
         
-        # Molecular features always come from atoms (X_t_input)
-        noisy_data = {"X_t": X_t_input, "E_t": A_t_input, "y_t": torch.zeros(A_t.shape[0], 0).type_as(A_t)}
-        extra_molecular = self.molecular_features(noisy_data)
+        # Prepare basic X input for features and model
+        X_model_input = X_t if X_t is not None else torch.zeros((*A_t.shape[:2], 0)).type_as(A_t)
+        if X_model_input.ndim == 2:
+            X_model_input = X_model_input.unsqueeze(-1)
+
+        # Molecular features always come from atoms (X_model_input)
+        if self.dataset_info is not None:
+            noisy_data = {"X_t": X_model_input, "E_t": A_t_input, "y_t": torch.zeros(A_t.shape[0], 0).type_as(A_t)}
+            extra_molecular = self.molecular_features(noisy_data)
+        else:
+            # Provide zero-channel placeholders for SBMs/PA to skip molecular features
+            extra_molecular = PlaceHolder(
+                X=torch.zeros((*X_model_input.shape[:2], 0)).type_as(X_model_input),
+                E=torch.zeros((*A_t.shape[:3], 0)).type_as(A_t),
+                y=torch.zeros(A_t.shape[0], 0).type_as(A_t)
+            )
 
         # 6. Model Forward Pass
         # Pass v-space variables (A_t, X_t) as primary inputs to the model
         # but augmented with features derived from probabilities.
-        # X: noisy_X_v (5) + RRWP_node (12) + Charge/Valency (2) = 19
-        X_model_input = X_t if X_t is not None else torch.zeros((*A_t.shape[:2], 0)).type_as(A_t)
-        X_model = torch.cat([X_model_input, extra_structural.X.float(), extra_molecular.X.float()], dim=-1)
+        # Preparation of model inputs (X, E, y)
+        # Determine if noisy A_t/X_t should be concatenated based on model's expected input dimensions
+        E_extra_dim = extra_structural.E.shape[-1]
+        E_target_dim = self.model.input_dims["E"]
+        A_t_model = A_t.unsqueeze(-1) if A_t.ndim == 3 else A_t
+        if A_t_model.shape[-1] + E_extra_dim > E_target_dim:
+            E_model = extra_structural.E.float()
+        else:
+            E_model = torch.cat([A_t_model, extra_structural.E.float()], dim=-1)
+
+        X_extra_dim = extra_structural.X.shape[-1] + extra_molecular.X.shape[-1]
+        X_target_dim = self.model.input_dims["X"]
+        if X_model_input.shape[-1] + X_extra_dim > X_target_dim:
+            X_model = torch.cat([extra_structural.X.float(), extra_molecular.X.float()], dim=-1)
+        else:
+            X_model = torch.cat([X_model_input, extra_structural.X.float(), extra_molecular.X.float()], dim=-1)
         
-        # E: noisy_E_v (4) + RRWP_edge (12) = 16
-        E_model = torch.cat([A_t, extra_structural.E.float()], dim=-1)
-        
-        # y: n/cycles (5) + weight (1) + t (1) = 7
+        # y: includes structural, molecular and time
         y_model = torch.cat([extra_structural.y.float(), extra_molecular.y.float(), t.unsqueeze(1)], dim=1).float()
         
         pred = self.model(X_model, E_model, y_model, flags)
 
         if self.score_mode == "graph":
             # Data Prediction Mode: pred.X and pred.E are logits for clean signal (X0, E0)
+            
             # 1. Edge Score Matching
             is_sb_E = hasattr(self.model, "sde_E") and getattr(self.model, "sde_E") is not None
             if is_sb_E:
-                 # Map predicted probabilities to v-space
-                 E0_pred = torch.softmax(pred.E, dim=-1)
-                 v_E0_pred = self.model.sde_E.x_to_v(E0_pred)
-                 score_E = self.jacobi_score(v_E0_pred, A_t, t)
+                score_E = self._compute_stick_breaking_score(pred.E, A_t, t, self.model.sde_E, flags_mask)
             else:
-                 score_E = self.jacobi_score(pred.E, A_t, t)
+                score_E = self._compute_regular_score(pred.E, A_t, t, flags_mask, is_edge=True)
             
             score_E = score_E * flags_mask.unsqueeze(-1) if score_E.ndim == 4 else score_E * flags_mask
             
@@ -251,11 +273,9 @@ class JacobiScore:
             if is_placeholder and X_t is not None:
                 is_sb_X = hasattr(self.model, "sde_X") and getattr(self.model, "sde_X") is not None
                 if is_sb_X:
-                    X0_pred = torch.softmax(pred.X, dim=-1)
-                    v_X0_pred = self.model.sde_X.x_to_v(X0_pred)
-                    score_X = self.jacobi_score(v_X0_pred, X_t, t)
+                    score_X = self._compute_stick_breaking_score(pred.X, X_t, t, self.model.sde_X, None)
                 else:
-                    score_X = self.jacobi_score(pred.X, X_t, t)
+                    score_X = self._compute_regular_score(pred.X, X_t, t, None, is_edge=False)
             
             if is_placeholder:
                 return PlaceHolder(X=score_X, E=score_E, y=None)

@@ -18,8 +18,6 @@ class SamplerConfig:
     time_schedule_power: float = 2.0
     n_steps: int = 100
     predictor: str = "em" 
-    sample_X: bool = True
-    sample_E: bool = True
     num_nodes: int = 9
     snr: float = 1.0
     scale_eps: float = 2.0
@@ -40,6 +38,7 @@ class ModelConfig:
     n_layers: int = 5
     extra_features_type: str = "rrwp"
     rrwp_steps: int = 12
+    use_sampled_features: bool = True
     hidden_mlp_dims: dict = field(default_factory=lambda: {"X": 256, "E": 128, "y": 128})
     hidden_dims: dict = field(
         default_factory=lambda: {
@@ -78,7 +77,7 @@ class TrainConfig:
     eps_sde_train: float = 1e-1
     time_schedule_train: str = "cosine"
     time_schedule_power_train: float = 2.0
-    num_epochs: int = 1000
+    num_epochs: int = 2000
     lambda_train: float = 1.0 # total multiplier
     lambda_node: float = 1.0
     lambda_edge: float = 10.0 # Edges are harder
@@ -91,12 +90,12 @@ class SDEConfig:
     type: str = "stick_breaking"
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1000
+    num_scales: int = 100
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 30
     sample_target: bool = True
-    eps_sde: float = 1e-3
+    eps_sde: float = 1e-2
     eps_score: float = 1e-10
 
 @dataclass

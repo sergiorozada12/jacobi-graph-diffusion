@@ -38,7 +38,9 @@ class ExtraFeatures:
 
         elif self.features_type == "rrwp":
             x_cycles, y_cycles = self.ncycles(E_t, node_mask)
-            E = E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
+            E = E_t.clone().detach().float()
+            if E.ndim == 4:
+                E = E[..., 1:].sum(-1)
             rrwp_node_attr, rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
             self.eigenfeatures = EigenFeatures(mode="all")
 
@@ -49,7 +51,9 @@ class ExtraFeatures:
             )
 
         elif self.features_type == "rrwp_double":
-            E = E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
+            E = E_t.clone().detach().float()
+            if E.ndim == 4:
+                E = E[..., 1:].sum(-1)
             rrwp_node_attr, rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
             rrwp_node_attr_wo_norm, rrwp_edge_attr_wo_norm = self.RWP(E, k=self.rrwp_steps)
 
@@ -72,7 +76,9 @@ class ExtraFeatures:
             )
 
         elif self.features_type == "rrwp_only":
-            E = E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
+            E = E_t.clone().detach().float()
+            if E.ndim == 4:
+                E = E[..., 1:].sum(-1)
             rrwp_node_attr, rrwp_edge_attr = self.RRWP(E, k=self.rrwp_steps)
 
             return utils.PlaceHolder(
@@ -83,10 +89,14 @@ class ExtraFeatures:
 
         elif self.features_type == "rrwp_comp":
             x_cycles, y_cycles = self.ncycles(E_t, node_mask)
-            E = E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
+            E = E_t.clone().detach().float()
+            if E.ndim == 4:
+                E = E[..., 1:].sum(-1)
             rrwp_node_attr, rrwp_edge_attr = self.RRWP(E, k=int(self.rrwp_steps / 2))
 
-            comp_E = 1 - E_t.clone().detach().float()[..., 1:].sum(-1)  # bs, n, n
+            comp_E = 1 - E_t.clone().detach().float()
+            if comp_E.ndim == 4:
+                comp_E = comp_E[..., 1:].sum(-1)
             comp_rrwp_node_attr, comp_rrwp_edge_attr = self.RRWP(comp_E, k=int(self.rrwp_steps / 2))
 
             return utils.PlaceHolder(

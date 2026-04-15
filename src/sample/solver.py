@@ -412,12 +412,11 @@ class PCSolver:
         if not is_joint:
             graph_fig = plot_graph_snapshots(
                 history,
-                flags,
-                num_snapshots=min(5, len(history)),
+                grid_shape=(5, 5) if len(history) >= 25 else (1, len(history)),
             )
             heatmap_fig = plot_heatmap_snapshots(
                 history,
-                num_snapshots=min(5, len(history)),
+                grid_shape=(5, 5) if len(history) >= 25 else (1, len(history)),
             )
             save_figure(graph_fig, "graph_snapshots.png")
             save_figure(heatmap_fig, "history_heatmaps.png")

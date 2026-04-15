@@ -266,6 +266,7 @@ class GraphTransformer(nn.Module):
     ):
         super().__init__()
         self.n_layers = n_layers
+        self.input_dims = input_dims
         self.out_dim_X = output_dims["X"]
         self.out_dim_E = output_dims["E"]
         self.out_dim_y = output_dims["y"]

@@ -168,7 +168,7 @@ def plot_graph_snapshots(
     axes = np.atleast_1d(axes).flatten()
 
     max_plots = n_rows * n_cols
-    trimmed = list(snapshots)[:max_plots]
+    trimmed = [_to_numpy(s) for s in list(snapshots)[:max_plots]]
 
     last_graph = nx.from_numpy_array((trimmed[-1] > threshold).astype(int))
     if last_graph.number_of_nodes() == 0:
@@ -204,7 +204,7 @@ def plot_heatmap_snapshots(
     axes = np.atleast_1d(axes).flatten()
 
     max_plots = n_rows * n_cols
-    trimmed = list(snapshots)[:max_plots]
+    trimmed = [_to_numpy(s) for s in list(snapshots)[:max_plots]]
 
     for ax, adj in zip(axes, trimmed):
         ax.imshow(adj, vmin=vmin, vmax=vmax, cmap=cmap)

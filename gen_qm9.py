@@ -75,7 +75,7 @@ def main():
     module = module.to(cfg.general.device)
     module.eval()
 
-    sampler = Sampler(cfg=cfg, model=module.model, node_dist=node_dist)
+    sampler = Sampler(cfg=cfg, model=module.model, node_dist=node_dist, dataset_info=datamodule.dataset_info)
     
     print(f"Sampling {args.num_samples} molecules...")
     samples, _ = sampler.sample()

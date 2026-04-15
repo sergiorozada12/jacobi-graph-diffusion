@@ -63,7 +63,12 @@ def main():
         logger=logger,
     )
 
-    trainer.fit(model, datamodule=datamodule)
+    ckpt_path = ckpt_dir / "last.ckpt"
+    if ckpt_path.exists():
+        print(f"Resuming from {ckpt_path}")
+        trainer.fit(model, datamodule=datamodule, ckpt_path=str(ckpt_path))
+    else:
+        trainer.fit(model, datamodule=datamodule)
 
 if __name__ == "__main__":
     main()
