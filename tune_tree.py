@@ -54,13 +54,11 @@ def main():
     #     n_steps=[1, 2],
     # )
 
-    # New OOD-focused search space
     search_space = SearchSpace(
-        num_scales=[1000, 1500],
-        eps_sde=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7],
-        time_schedule=["log", "log_power"],
-        time_schedule_power=[0.5, 0.7, 1.0],
-        eps_time=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7],
+        num_scales=[1000],
+        eps_sde=[1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10],
+        time_schedule=["log"],
+        eps_time=[1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10],
         predictor=["em", "heun", "milstein"],
     )
 
