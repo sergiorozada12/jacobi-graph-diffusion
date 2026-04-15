@@ -17,11 +17,25 @@ class DistributionNodes:
 
 
 def resolve_size_ref_dataset_path(data_dir, dataset_name, target_nodes):
-    # Try standard size_ref subfolder first
+    dataset_name = str(dataset_name)
+
+    # If config.data.data already points to a pickle path, derive the
+    # size-specific sibling file next to it, e.g.
+    # data/size_ref/tree_graphon/tree_graphon.pkl -> tree_graphon_30.pkl
+    if dataset_name.endswith(".pkl"):
+        base_path = Path(dataset_name)
+        if not base_path.is_absolute():
+            base_path = Path(data_dir) / base_path
+        candidate = base_path.with_name(f"{base_path.stem}_{target_nodes}{base_path.suffix}")
+        if candidate.exists():
+            return candidate
+        return candidate
+
+    # Otherwise treat dataset_name as a slug.
     p1 = Path(data_dir) / "size_ref" / dataset_name / f"{dataset_name}_{target_nodes}.pkl"
     if p1.exists():
         return p1
-    # Try direct data folder (as used by some tuning scripts)
+
     p2 = Path(data_dir) / f"{dataset_name}_{target_nodes}.pkl"
     if p2.exists():
         return p2
@@ -44,6 +58,7 @@ def load_graphs_pickle(input_path):
 
 def compute_reference_metrics(datamodule, sampling_metrics, cache_name=None):
     dataset_name = cache_name or getattr(datamodule.config.data, "data", "dataset")
+    dataset_name = str(dataset_name).replace("\\", "_").replace("/", "_")
     metrics_dir = os.path.join(datamodule.config.data.dir, "ref_metrics")
     os.makedirs(metrics_dir, exist_ok=True)
     metrics_path = os.path.join(metrics_dir, f"ref_metrics_{dataset_name}.pt")
@@ -112,6 +127,10 @@ def load_size_ref_metrics(cfg, metrics_cls, target_nodes):
         raise FileNotFoundError(
             f"Size-ref dataset not found for dataset '{cfg.data.data}' and target_nodes={target_nodes}: {size_ref_path}"
         )
+    print(
+        f"Using size-matched reference dataset {size_ref_path} "
+        f"for requested target_nodes={target_nodes}."
+    )
 
     ref_cfg = copy.deepcopy(cfg)
     ref_cfg.data.data = str(size_ref_path)
@@ -119,11 +138,14 @@ def load_size_ref_metrics(cfg, metrics_cls, target_nodes):
     ref_datamodule.setup()
     ref_sampling_metrics = metrics_cls(ref_datamodule)
     
+    def sanitize_cache_name(name):
+        return str(name).replace("\\", "_").replace("/", "_")
+
     # Try to find existing cache with multiple possible names
     metrics_dir = Path(cfg.data.dir) / "ref_metrics"
     possible_names = [
-        f"{cfg.data.data}_{target_nodes}",       # Format used by run_tuning
-        f"{cfg.data.data}_size_{target_nodes}"    # Format used by load_size_ref_metrics
+        sanitize_cache_name(f"{cfg.data.data}_{target_nodes}"),       # Format used by run_tuning
+        sanitize_cache_name(f"{cfg.data.data}_size_{target_nodes}")   # Format used by load_size_ref_metrics
     ]
     
     cache_name = possible_names[1] # Default to the size_ variant for new computations

@@ -18,10 +18,11 @@ class SpectreDatasetModule(pl.LightningDataModule):
         self.max_feat_num = config.data.max_feat_num
         self.init_type = config.data.init
         data_name = config.data.data
-        if isinstance(data_name, str) and (data_name.endswith(".pkl") or os.path.isabs(data_name)):
+        if isinstance(data_name, str) and os.path.isabs(data_name):
             self.data_path = data_name
         else:
-            self.data_path = os.path.join(config.data.dir, data_name + ".pkl")
+            rel_path = data_name if data_name.endswith(".pkl") else data_name + ".pkl"
+            self.data_path = os.path.join(config.data.dir, rel_path)
         self.test_split = config.data.test_split
         self.val_split = config.data.val_split
 
