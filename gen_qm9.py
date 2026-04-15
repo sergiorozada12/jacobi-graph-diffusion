@@ -32,7 +32,50 @@ def parse_args():
         default=32,
         help="Maximum number of molecules to show in the grid.",
     )
+    parser.add_argument(
+        "--min-nodes",
+        type=int,
+        default=None,
+        help="Minimum number of nodes to sample. Requires --max-nodes. Defaults to dataset distribution.",
+    )
+    parser.add_argument(
+        "--max-nodes",
+        type=int,
+        default=None,
+        help="Maximum number of nodes to sample. Requires --min-nodes. Defaults to dataset distribution.",
+    )
     return parser.parse_args()
+
+def build_node_distribution(cfg, datamodule, min_nodes=None, max_nodes=None):
+    max_nodes_possible = cfg.data.max_node_num + 1
+    base_prob = datamodule.node_counts() # Returns empirical distribution
+    
+    # Pad base_prob if it's smaller than max_nodes_possible
+    if base_prob.numel() < max_nodes_possible:
+        padding = torch.zeros(max_nodes_possible - base_prob.numel(), dtype=base_prob.dtype, device=base_prob.device)
+        base_prob = torch.cat([base_prob, padding], dim=0)
+    # Trim if it's larger
+    base_prob = base_prob[:max_nodes_possible]
+
+    if min_nodes is None and max_nodes is None:
+        return DistributionNodes(prob=base_prob)
+
+    if min_nodes is None or max_nodes is None:
+        raise ValueError("Both --min-nodes and --max-nodes must be provided together.")
+    if min_nodes < 1:
+        raise ValueError("Minimum number of nodes must be at least 1.")
+    if max_nodes < min_nodes:
+        raise ValueError("Maximum number of nodes must be greater than or equal to the minimum.")
+
+    # For OOD generation, we need to create a new probability vector
+    # that goes up to max_nodes
+    probs = torch.zeros(max_nodes + 1, dtype=base_prob.dtype, device=base_prob.device)
+    probs[min_nodes : max_nodes + 1] = 1.0
+    total_mass = probs.sum()
+    if total_mass <= 0:
+        raise ValueError("Probability mass over the requested range is zero.")
+    probs /= total_mass
+    return DistributionNodes(prob=probs)
 
 def main():
     args = parse_args()
@@ -49,7 +92,13 @@ def main():
     datamodule = QM9DatasetModule(cfg)
     datamodule.setup()
 
-    node_dist = DistributionNodes(prob=datamodule.node_counts())
+    if args.min_nodes is not None and args.max_nodes is not None:
+        if args.max_nodes > cfg.data.max_node_num:
+            cfg.data.max_node_num = args.max_nodes
+            cfg.sampler.num_nodes = args.max_nodes
+            print(f"Overriding max_node_num to {args.max_nodes} for OOD generation.")
+
+    node_dist = build_node_distribution(cfg, datamodule, args.min_nodes, args.max_nodes)
     sampling_metrics = BasicMolecularMetrics(dataset_info=datamodule.dataset_info)
 
     # We load via the module class to ensure SDEs and model are correctly linked

@@ -93,7 +93,7 @@ class SDEConfig:
     num_scales: int = 100
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 30
+    order: int = 100 # 50 # 30
     sample_target: bool = True
     eps_sde: float = 1e-2
     eps_score: float = 1e-10
