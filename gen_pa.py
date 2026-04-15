@@ -1,5 +1,7 @@
 import argparse
 import json
+import math
+import statistics
 from omegaconf import OmegaConf
 from pathlib import Path
 import torch
@@ -8,7 +10,7 @@ import pytorch_lightning as pl
 from src.models.transformer_model import GraphTransformer
 from src.dataset.synth import SynthGraphDatasetModule
 from src.dataset.spectre import SpectreDatasetModule
-from src.dataset.utils import DistributionNodes, compute_reference_metrics
+from src.dataset.utils import DistributionNodes, compute_reference_metrics, load_graphs_pickle, save_graphs_pickle
 from src.sample.sampler import Sampler
 #from configs.config_tree import MainConfig
 #from configs.config_planar import MainConfig
@@ -40,6 +42,12 @@ def parse_args():
         help="Optional path where newly generated graphs will be saved as a pickle.",
     )
     parser.add_argument(
+        "--load-graphs-path",
+        type=str,
+        default=None,
+        help="Optional path to a saved graph pickle. If provided, skip generation and only run evaluation.",
+    )
+    parser.add_argument(
         "--num-samples",
         type=int,
         default=None,
@@ -56,6 +64,12 @@ def parse_args():
         type=str,
         default="emd",
         help="Kernel name to store in JSON.",
+    )
+    parser.add_argument(
+        "--n-folds",
+        type=int,
+        default=1,
+        help="Number of folds to evaluate. With 1, behaves like standard single evaluation.",
     )
     return parser.parse_args()
 
@@ -91,6 +105,76 @@ def build_node_distribution(cfg, datamodule, min_nodes=None, max_nodes=None):
         raise ValueError("Probability mass over the requested range is zero; check the node range.")
     probs /= total_mass
     return DistributionNodes(prob=probs)
+
+
+def _print_ratio_block(metrics, title="Ratios"):
+    print('------------------------------------------------------------------------------------')
+    print(title)
+    print('------------------------------------------------------------------------------------')
+    keys = sorted([k for k in metrics if k.endswith('_ratio') or k.endswith('average_ratio')])
+    if not keys:
+        print("No ratios available in this block.")
+        return
+    for k in keys:
+        print(f"{k} - {metrics[k]}")
+
+
+def _aggregate_fold_metrics(fold_metrics):
+    aggregated = {}
+    if not fold_metrics:
+        return aggregated
+    keys = fold_metrics[0].keys()
+    for key in keys:
+        values = [metrics[key] for metrics in fold_metrics if isinstance(metrics.get(key), (int, float))]
+        if not values:
+            continue
+        aggregated[key] = {
+            "mean": statistics.mean(values),
+            "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+        }
+    return aggregated
+
+
+def _resolve_size_summary(samples, args, cfg):
+    if args.min_nodes is not None and args.max_nodes is not None and args.min_nodes == args.max_nodes:
+        return args.min_nodes
+    if not samples:
+        return None
+
+    node_counts = sorted({graph.number_of_nodes() for graph in samples})
+    if len(node_counts) == 1:
+        return node_counts[0]
+    return [node_counts[0], node_counts[-1]]
+
+
+def _evaluate_folds(samples, n_folds, sampling_metrics, ref_metrics, sampling_metrics_specific=None, ref_metrics_specific=None):
+    fold_size = math.ceil(len(samples) / n_folds)
+    fold_metrics = []
+    fold_metrics_specific = []
+    for fold_idx in range(n_folds):
+        start = fold_idx * fold_size
+        end = min(len(samples), start + fold_size)
+        fold_samples = samples[start:end]
+        if not fold_samples:
+            continue
+        sampling_metrics.reset()
+        fold_result = sampling_metrics.forward(
+            fold_samples,
+            ref_metrics=ref_metrics,
+            local_rank=0,
+            test=True,
+        )
+        fold_metrics.append(fold_result)
+        if sampling_metrics_specific is not None and ref_metrics_specific is not None:
+            sampling_metrics_specific.reset()
+            specific_result = sampling_metrics_specific.forward(
+                fold_samples,
+                ref_metrics=ref_metrics_specific,
+                local_rank=0,
+                test=True,
+            )
+            fold_metrics_specific.append(specific_result)
+    return fold_metrics, fold_metrics_specific
 
 
 def main():
@@ -144,83 +228,105 @@ def main():
             sampling_metrics_specific = None
             ref_metrics_specific = None
 
-    model = GraphTransformer(
-        n_layers=cfg.model.n_layers,
-        input_dims=cfg.model.input_dims,
-        hidden_mlp_dims=cfg.model.hidden_mlp_dims,
-        hidden_dims=cfg.model.hidden_dims,
-        output_dims=cfg.model.output_dims,
-        act_fn_in=torch.nn.ReLU(),
-        act_fn_out=torch.nn.ReLU(),
-    )
-    ckpt_dir = Path("checkpoints") / cfg.data.data
-    ema_path = ckpt_dir / "weights_ema.pth"
-    weights_path = ckpt_dir / "weights.pth"
-    if cfg.train.use_ema and ema_path.exists():
-        weight_path = ema_path
-    elif weights_path.exists():
-        weight_path = weights_path
+    if args.load_graphs_path is not None:
+        samples = load_graphs_pickle(args.load_graphs_path)
+        print(f"Loaded saved graphs from {args.load_graphs_path}")
     else:
-        raise FileNotFoundError(
-            f"Could not find checkpoint for '{cfg.data.data}'. "
-            f"Looked for {ema_path} and {weights_path}."
+        model = GraphTransformer(
+            n_layers=cfg.model.n_layers,
+            input_dims=cfg.model.input_dims,
+            hidden_mlp_dims=cfg.model.hidden_mlp_dims,
+            hidden_dims=cfg.model.hidden_dims,
+            output_dims=cfg.model.output_dims,
+            act_fn_in=torch.nn.ReLU(),
+            act_fn_out=torch.nn.ReLU(),
         )
-    state_dict = torch.load(weight_path, map_location="cpu")
-    model.load_state_dict(state_dict)
-    model = model.to(cfg.general.device)
-    model.eval()
+        ckpt_dir = Path("checkpoints") / cfg.data.data
+        ema_path = ckpt_dir / "weights_ema.pth"
+        weights_path = ckpt_dir / "weights.pth"
+        if cfg.train.use_ema and ema_path.exists():
+            weight_path = ema_path
+        elif weights_path.exists():
+            weight_path = weights_path
+        else:
+            raise FileNotFoundError(
+                f"Could not find checkpoint for '{cfg.data.data}'. "
+                f"Looked for {ema_path} and {weights_path}."
+            )
+        state_dict = torch.load(weight_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+        model = model.to(cfg.general.device)
+        model.eval()
 
-    if args.num_samples is not None:
-        cfg.sampler.test_graphs = args.num_samples
-    
-    sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
-    samples, fig = sampler.sample()
+        if args.num_samples is not None:
+            cfg.sampler.test_graphs = args.num_samples
+        
+        sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
+        samples, fig = sampler.sample()
 
-    save_path = Path("samples/test_pa.png")
-    save_figure(fig, save_path, dpi=300)
-    
-    save_graphs_path = args.save_graphs_path if args.save_graphs_path else "samples/test_graphs.pkl"
-    from src.dataset.utils import save_graphs_pickle
-    save_graphs_pickle(samples, save_graphs_path)
-    print(f"Saved generated graphs to {save_graphs_path}")
+        save_path = Path("samples/test_pa.png")
+        save_figure(fig, save_path, dpi=300)
+        
+        save_graphs_path = args.save_graphs_path if args.save_graphs_path else "samples/test_graphs.pkl"
+        save_graphs_pickle(samples, save_graphs_path)
+        print(f"Saved generated graphs to {save_graphs_path}")
 
-    sampling_metrics.reset()
-    metrics = sampling_metrics.forward(
-        samples,
-        ref_metrics=ref_metrics,
-        local_rank=0,
-        test=True,
+    if args.n_folds < 1:
+        raise ValueError("--n-folds must be at least 1.")
+
+    fold_metrics, fold_metrics_specific = _evaluate_folds(
+        samples, args.n_folds, sampling_metrics, ref_metrics, sampling_metrics_specific, ref_metrics_specific
     )
 
-    print('------------------------------------------------------------------------------------')
-    for k in ref_metrics['val']:
-        print(f"{k} ref. / gen. - {ref_metrics['val'][k]} / {metrics[k]}")
+    if args.n_folds > 1:
+        print('------------------------------------------------------------------------------------')
+        print(f'Per-fold metrics ({len(fold_metrics)} folds)')
+        print('------------------------------------------------------------------------------------')
+        for idx, fold_result in enumerate(fold_metrics, start=1):
+            print(f"Fold {idx}")
+            for key in sorted(fold_result.keys()):
+                if isinstance(fold_result[key], (int, float)):
+                    print(f"{key} - {fold_result[key]}")
+        metrics = _aggregate_fold_metrics(fold_metrics)
+        metrics_specific = _aggregate_fold_metrics(fold_metrics_specific) if fold_metrics_specific else None
+    else:
+        metrics = fold_metrics[0]
+        metrics_specific = fold_metrics_specific[0] if fold_metrics_specific else None
 
     print('------------------------------------------------------------------------------------')
-    for k in metrics:
-        if '_ratio' not in k:
-            continue
-        print(f"{k} - {metrics[k]}")
+    if args.n_folds > 1:
+        for k in ref_metrics['val']:
+            if k in metrics:
+                print(f"{k} ref. / gen mean±std - {ref_metrics['val'][k]} / {metrics[k]['mean']} ± {metrics[k]['std']}")
+    else:
+        for k in ref_metrics['val']:
+            print(f"{k} ref. / gen. - {ref_metrics['val'][k]} / {metrics[k]}")
 
-    if sampling_metrics_specific is not None and ref_metrics_specific is not None:
-        sampling_metrics_specific.reset()
-        metrics_specific = sampling_metrics_specific.forward(
-            samples,
-            ref_metrics=ref_metrics_specific,
-            local_rank=0,
-            test=True,
-        )
+    if args.n_folds == 1:
+        _print_ratio_block(metrics, title="Training-distribution ratios")
+
+    if sampling_metrics_specific is not None and ref_metrics_specific is not None and metrics_specific is not None and args.n_folds == 1:
         print(f'\n------------------------------------------------------------------------------------')
         print(f'Metrics vs {dataset_specific_name}')
         for k in ref_metrics_specific['val']:
             print(f"{k} ref. / gen. - {ref_metrics_specific['val'][k]} / {metrics_specific.get(k, 'N/A')}")
-        print(f'------------------------------------------------------------------------------------')
-        for k in metrics_specific:
-            if '_ratio' in k:
-                print(f"{k} - {metrics_specific[k]}")
+        _print_ratio_block(metrics_specific, title=f"Ratios vs {dataset_specific_name}")
 
     if args.json_out:
         base_keys = ["degree", "clustering", "orbit", "spectre", "wavelet"]
+        if args.n_folds > 1:
+            entry = {
+                "size": _resolve_size_summary(samples, args, cfg),
+                "n_folds": args.n_folds,
+                "metrics_mean_std": metrics,
+            }
+            if metrics_specific is not None:
+                entry["metrics_mean_std_size_ref"] = metrics_specific
+            out_path = Path(args.json_out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w") as f:
+                json.dump(entry, f, indent=2)
+            return
         
         def get_metrics_dict(m):
             d = {k: m.get(k, 0.0) for k in base_keys}
@@ -237,7 +343,7 @@ def main():
         m_ratios = get_ratios_dict(metrics)
         
         entry = {
-            "size": args.min_nodes if args.min_nodes is not None else cfg.sampler.num_nodes,
+            "size": _resolve_size_summary(samples, args, cfg),
             "accuracy": metrics.get("pa_acc", 0.0),
             "acc_extra": {},
             "average_mmd": avg_mmd,

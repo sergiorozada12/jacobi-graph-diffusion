@@ -1,5 +1,7 @@
 import argparse
 import json
+import math
+import statistics
 from omegaconf import OmegaConf
 from pathlib import Path
 from typing import Any, Dict
@@ -114,6 +116,12 @@ def parse_args():
         default="emd",
         help="Kernel name to store in JSON.",
     )
+    parser.add_argument(
+        "--n-folds",
+        type=int,
+        default=1,
+        help="Number of folds to evaluate. With 1, behaves like standard single evaluation.",
+    )
     return parser.parse_args()
 
 
@@ -180,6 +188,65 @@ def _print_ratio_block(metrics, suffix="", title="Ratios"):
         if not k.endswith('_ratio' + suffix) and not k.endswith('average_ratio' + suffix):
             continue
         print(f"{k} - {metrics[k]}")
+
+
+def _aggregate_fold_metrics(fold_metrics):
+    aggregated = {}
+    if not fold_metrics:
+        return aggregated
+    keys = fold_metrics[0].keys()
+    for key in keys:
+        values = [metrics[key] for metrics in fold_metrics if isinstance(metrics.get(key), (int, float))]
+        if not values:
+            continue
+        aggregated[key] = {
+            "mean": statistics.mean(values),
+            "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+        }
+    return aggregated
+
+
+def _resolve_size_summary(samples, args, cfg):
+    if args.min_nodes is not None and args.max_nodes is not None and args.min_nodes == args.max_nodes:
+        return args.min_nodes
+    if not samples:
+        return None
+
+    node_counts = sorted({graph.number_of_nodes() for graph in samples})
+    if len(node_counts) == 1:
+        return node_counts[0]
+    return [node_counts[0], node_counts[-1]]
+
+
+def _evaluate_folds(samples, n_folds, sampling_metrics, ref_metrics, extra_sampling_metrics):
+    fold_size = math.ceil(len(samples) / n_folds)
+    fold_metrics = []
+    fold_metrics_extra = {}
+    for fold_idx in range(n_folds):
+        start = fold_idx * fold_size
+        end = min(len(samples), start + fold_size)
+        fold_samples = samples[start:end]
+        if not fold_samples:
+            continue
+        sampling_metrics.reset()
+        fold_result = sampling_metrics.forward(
+            fold_samples,
+            ref_metrics=ref_metrics,
+            local_rank=0,
+            test=True,
+        )
+        fold_metrics.append(fold_result)
+        if extra_sampling_metrics:
+            for suffix, (extra_metrics, extra_module) in extra_sampling_metrics.items():
+                extra_module.reset()
+                res = extra_module.forward(
+                    fold_samples,
+                    ref_metrics=extra_metrics,
+                    local_rank=0,
+                    test=True,
+                )
+                fold_metrics_extra.setdefault(suffix, []).append(res)
+    return fold_metrics, fold_metrics_extra
 
 
 def main():
@@ -306,33 +373,49 @@ def main():
         else:
             args.average_ratio_to_size_ref = False
 
-    sampling_metrics.reset()
-    metrics = sampling_metrics.forward(
-        samples,
-        ref_metrics=ref_metrics,
-        local_rank=0,
-        test=True,
+    if args.n_folds < 1:
+        raise ValueError("--n-folds must be at least 1.")
+
+    fold_metrics, fold_metrics_extra = _evaluate_folds(
+        samples, args.n_folds, sampling_metrics, ref_metrics, extra_sampling_metrics
     )
 
-    metrics_extra = {}
-    if extra_sampling_metrics:
-        for suffix, (extra_metrics, extra_module) in extra_sampling_metrics.items():
-            extra_module.reset()
-            res = extra_module.forward(
-                samples,
-                ref_metrics=extra_metrics,
-                local_rank=0,
-                test=True,
-            )
-            metrics_extra[suffix] = res
+    if args.n_folds > 1:
+        print('------------------------------------------------------------------------------------')
+        print(f'Per-fold metrics ({len(fold_metrics)} folds)')
+        print('------------------------------------------------------------------------------------')
+        for idx, fold_result in enumerate(fold_metrics, start=1):
+            print(f"Fold {idx}")
+            for key in sorted(fold_result.keys()):
+                if isinstance(fold_result[key], (int, float)):
+                    print(f"{key} - {fold_result[key]}")
+
+        metrics = _aggregate_fold_metrics(fold_metrics)
+        metrics_extra = {
+            suffix: _aggregate_fold_metrics(results)
+            for suffix, results in fold_metrics_extra.items()
+        }
+    else:
+        metrics = fold_metrics[0]
+        metrics_extra = {
+            suffix: results[0]
+            for suffix, results in fold_metrics_extra.items()
+            if results
+        }
 
     print('------------------------------------------------------------------------------------')
-    for k in ref_metrics['val']:
-        print(f"{k} ref. / gen. - {ref_metrics['val'][k]} / {metrics[k]}")
+    if args.n_folds > 1:
+        for k in ref_metrics['val']:
+            if k in metrics:
+                print(f"{k} ref. / gen mean±std - {ref_metrics['val'][k]} / {metrics[k]['mean']} ± {metrics[k]['std']}")
+    else:
+        for k in ref_metrics['val']:
+            print(f"{k} ref. / gen. - {ref_metrics['val'][k]} / {metrics[k]}")
 
-    _print_ratio_block(metrics, title="Training-distribution ratios")
+    if args.n_folds == 1:
+        _print_ratio_block(metrics, title="Training-distribution ratios")
 
-    if extra_sampling_metrics is not None and "size_ref" in metrics_extra:
+    if extra_sampling_metrics is not None and "size_ref" in metrics_extra and args.n_folds == 1:
         size_ref_res = metrics_extra["size_ref"]
         # We need the reference values from the dict we loaded
         ref_vals = extra_sampling_metrics["size_ref"][0]
@@ -347,6 +430,17 @@ def main():
 
     if args.json_out:
         base_keys = ["degree", "clustering", "orbit", "spectre", "wavelet"]
+        if args.n_folds > 1:
+            entry = {
+                "size": _resolve_size_summary(samples, args, cfg),
+                "n_folds": args.n_folds,
+                "metrics_mean_std": metrics,
+            }
+            if "size_ref" in metrics_extra:
+                entry["metrics_mean_std_size_ref"] = metrics_extra["size_ref"]
+            with open(args.json_out, "w") as f:
+                json.dump(entry, f, indent=2)
+            return
         
         def get_metrics_dict(m):
             d = {k: m.get(k, 0.0) for k in base_keys}
@@ -363,7 +457,7 @@ def main():
         m_ratios = get_ratios_dict(metrics)
         
         entry = {
-            "size": args.min_nodes if args.min_nodes is not None else cfg.sampler.num_nodes,
+            "size": _resolve_size_summary(samples, args, cfg),
             "accuracy": metrics.get("tree_acc", 0.0),
             "acc_extra": {},
             "average_mmd": avg_mmd,
