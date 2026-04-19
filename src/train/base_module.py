@@ -225,7 +225,8 @@ class DiffusionBaseModule(pl.LightningModule):
                 keep_zero_weights=False,
                 return_adjs=True,
             )
-        wandb.log({"val/sampler": wandb.Image(fig)})
+        if wandb.run:
+            wandb.log({"val/sampler": wandb.Image(fig)})
         close_figure(fig)
 
         self.sampling_metrics.reset()

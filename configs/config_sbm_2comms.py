@@ -41,7 +41,7 @@ class ModelConfig:
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
     use_sampled_features: bool = True
-    n_layers: int = 10
+    n_layers: int = 4
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
         "E": 20,    # rrwp_steps
@@ -81,7 +81,7 @@ class TrainConfig:
     eps_sde_train: float = 0.0001
     time_schedule_train: str = "cosine"
     time_schedule_power_train: float = 1.0
-    num_epochs: int = 30_000
+    num_epochs: int = 10_000
     lambda_train: float = 5.0
     use_ema: bool = True
     ema_decay: float = 0.999

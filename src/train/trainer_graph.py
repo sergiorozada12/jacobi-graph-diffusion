@@ -45,7 +45,8 @@ class DiffusionGraphModule(DiffusionBaseModule):
             adj_noisy=batch["adj_t"][0],
             t_val=t[0].item(),
         )
-        wandb.log({"val/denoiser": wandb.Image(fig)})
+        if wandb.run:
+            wandb.log({"val/denoiser": wandb.Image(fig)})
         close_figure(fig)
 
     def _prepare_batch(self, adj: torch.Tensor, observed_mask):
@@ -186,7 +187,8 @@ class DiffusionWeightedGraphModule(DiffusionBaseModule):
             adj_noisy=batch["adj_t"][0],
             t_val=t[0].item(),
         )
-        wandb.log({"val/denoiser": wandb.Image(fig)})
+        if wandb.run:
+            wandb.log({"val/denoiser": wandb.Image(fig)})
         close_figure(fig)
 
     def _prepare_batch(self, adj: torch.Tensor, observed_mask):
