@@ -60,14 +60,21 @@ def _collect_snapshots(graphs, max_node_num, max_snapshots, weight_key):
         if graph.number_of_nodes() == 0:
             continue
 
-        nodes = list(graph.nodes())
-        adj = nx.to_numpy_array(graph, nodelist=nodes, weight=weight_key, dtype=float)
         padded = np.zeros((max_node_num, max_node_num), dtype=np.float32)
-        size = min(adj.shape[0], max_node_num)
-        if size > 0:
-            sub_adj = adj[:size, :size]
-            padded[:size, :size] = sub_adj
-            max_value = max(max_value, float(np.max(sub_adj)))
+        has_edges = False
+        
+        for u, v, data in graph.edges(data=True):
+            u_idx, v_idx = int(u), int(v)
+            if u_idx < max_node_num and v_idx < max_node_num:
+                w = float(data.get(weight_key, 0.0))
+                padded[u_idx, v_idx] = w
+                padded[v_idx, u_idx] = w
+                has_edges = True
+
+        if has_edges:
+            local_max = float(np.max(padded))
+            max_value = max(max_value, local_max)
+
         snapshots.append(padded)
 
         if len(snapshots) >= max_snapshots:
@@ -218,11 +225,16 @@ def main():
     try:
         sampling_metrics = WirelessSamplingMetrics(datamodule)
         ref_metrics = compute_reference_metrics(datamodule, sampling_metrics)
+
+        # Explicitly pre-sample subgraphs mimicking test size distribution for visualization
+        sampled_generated = sampling_metrics._sample_subgraphs(graph_list, len(datamodule.test_graphs))
+
         metrics_out = sampling_metrics.forward(
             graph_list,
             ref_metrics=ref_metrics,
             local_rank=0,
             test=True,
+            sampled_generated=sampled_generated,
         )
         ref_test = ref_metrics.get("test") if isinstance(ref_metrics, dict) else None
         ratio_keys = list(metrics_out.keys())
@@ -245,38 +257,74 @@ def main():
                     data["interference"] = float(raw)
                 ref_graphs_raw.append(g_copy)
 
+            # 1. Histogram for the fully dense 70-node outputs
             hist_fig = plot_edge_weight_histograms(
                 ref_graphs_raw,
                 graph_list,
-                dataset_name="metrofi test vs generated edge weights",
+                dataset_name="metrofi test vs generated full edges",
             )
-            hist_path = save_path.with_name("wireless_edge_weight_hist.png")
+            hist_path = save_path.with_name("wireless_edge_weight_hist_full.png")
             save_figure(hist_fig, hist_path, dpi=300)
-            print(f"Saved edge weight histogram comparison to {hist_path}.")
+            print(f"Saved full edge weight histogram comparison to {hist_path}.")
+
+            # 2. Histogram specifically for the size-matched generated subgraphs
+            hist_fig_sub = plot_edge_weight_histograms(
+                ref_graphs_raw,
+                sampled_generated,
+                dataset_name="metrofi test vs generated subgraphs",
+            )
+            hist_path_sub = save_path.with_name("wireless_edge_weight_hist_subgraphs.png")
+            save_figure(hist_fig_sub, hist_path_sub, dpi=300)
+            print(f"Saved subgraphs edge weight histogram comparison to {hist_path_sub}.")
+
         except Exception as exc:
             print(f"Warning: could not plot edge weight histograms: {exc}")
     except Exception as exc:
         print(f"Warning: could not compute wireless sampling metrics: {exc}")
 
+    # Build heatmaps for the fully dense graphs
     heatmap_snapshots, vmax, weight_attr = build_weighted_snapshots(samples, cfg.data.max_node_num)
     if heatmap_snapshots:
         grid_cols = min(5, len(heatmap_snapshots))
         grid_rows = math.ceil(len(heatmap_snapshots) / grid_cols)
         vmin_heat = interference_min if interference_scale > 0 else 0.0
-        vmax = max(vmax, interference_max) if interference_scale > 0 else (vmax if vmax > 0 else 1.0)
+        vmax_heat = max(vmax, interference_max) if interference_scale > 0 else (vmax if vmax > 0 else 1.0)
         heatmap_fig = plot_heatmap_snapshots(
             heatmap_snapshots,
             grid_shape=(grid_rows, grid_cols),
             cmap="magma",
             vmin=vmin_heat,
-            vmax=vmax,
+            vmax=vmax_heat,
         )
-        heatmap_path = save_path.with_name("wireless_weight_heatmaps.png")
+        heatmap_path = save_path.with_name("wireless_weight_heatmaps_full.png")
         save_figure(heatmap_fig, heatmap_path, dpi=300)
         print(
-            f"Saved weighted adjacency heatmaps to {heatmap_path} "
-            f"(vmax: {vmax:.4f}, attr={weight_attr})."
+            f"Saved full adjacency heatmaps to {heatmap_path} "
+            f"(vmax: {vmax_heat:.4f}, attr={weight_attr})."
         )
+
+    # Build heatmaps for the size-matched generated subgraphs
+    try:
+        heatmap_snapshots_sub, vmax_sub, weight_attr_sub = build_weighted_snapshots(sampled_generated, cfg.data.max_node_num)
+        if heatmap_snapshots_sub:
+            grid_cols_sub = min(5, len(heatmap_snapshots_sub))
+            grid_rows_sub = math.ceil(len(heatmap_snapshots_sub) / grid_cols_sub)
+            vmax_heat_sub = max(vmax_sub, interference_max) if interference_scale > 0 else (vmax_sub if vmax_sub > 0 else 1.0)
+            heatmap_fig_sub = plot_heatmap_snapshots(
+                heatmap_snapshots_sub,
+                grid_shape=(grid_rows_sub, grid_cols_sub),
+                cmap="magma",
+                vmin=vmin_heat,
+                vmax=vmax_heat_sub,
+            )
+            heatmap_path_sub = save_path.with_name("wireless_weight_heatmaps_subgraphs.png")
+            save_figure(heatmap_fig_sub, heatmap_path_sub, dpi=300)
+            print(
+                f"Saved subgraphs adjacency heatmaps to {heatmap_path_sub} "
+                f"(vmax: {vmax_heat_sub:.4f}, attr={weight_attr_sub})."
+            )
+    except Exception as exc:
+        print(f"Warning: could not plot subgraphs heatmaps: {exc}")
 
 
 if __name__ == "__main__":

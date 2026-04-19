@@ -14,15 +14,15 @@ class GeneralConfig:
 
 @dataclass
 class SamplerConfig:
-    noise_removal: bool = True
+    noise_removal: bool = False
     eps_time: float = 1e-1
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
-    snr: float = 0.1
-    scale_eps: float = 2.5
-    n_steps: int = 5
+    snr: float = 0.01
+    scale_eps: float = 0.1
+    n_steps: int = 1
     num_nodes: int = 70
-    test_graphs: int = 100
+    test_graphs: int = 32
     use_corrector: bool = True
     predictor: str = "em"  # "em" or "milstein"
     val_use_full_graph: bool = True
@@ -34,7 +34,7 @@ class SamplerConfig:
 class DataConfig:
     dir: str = "data/metrofi"
     data: str = "metrofi"
-    batch_size: int = 100
+    batch_size: int = 32
     max_node_num: int = 70
     max_feat_num: int = 1
     test_split: float = 0.1
@@ -108,12 +108,12 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 200
+    num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 200
+    order: int = 100
     sample_target: bool = False
-    eps_sde: float = 1e-5
+    eps_sde: float = 1e-1
     eps_score: float = 1e-10
 
 

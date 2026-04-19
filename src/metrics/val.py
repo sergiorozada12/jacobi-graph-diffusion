@@ -1525,9 +1525,9 @@ class WirelessSamplingMetrics:
     """
 
     def __init__(self, datamodule):
-        self.train_graphs = self._loader_to_nx(datamodule.train_dataloader())
-        self.val_graphs = self._loader_to_nx(datamodule.val_dataloader())
-        self.test_graphs = self._loader_to_nx(datamodule.test_dataloader())
+        self.train_graphs = datamodule.train_graphs
+        self.val_graphs = datamodule.val_graphs
+        self.test_graphs = datamodule.test_graphs
 
         self.test_size_support, self.test_size_probs = self._graph_size_distribution(self.test_graphs)
         self.rng = np.random.default_rng()
@@ -1542,6 +1542,7 @@ class WirelessSamplingMetrics:
         ref_metrics: Optional[Dict[str, Any]] = None,
         local_rank: int = 0,
         test: bool = False,
+        sampled_generated: Optional[List[nx.Graph]] = None,
     ) -> Dict[str, float]:
         reference_graphs = self.test_graphs if test else self.val_graphs
         split = "test" if test else "validation"
@@ -1554,7 +1555,8 @@ class WirelessSamplingMetrics:
 
         edge_metrics = self._edge_distribution_metrics(reference_graphs, generated_graphs)
 
-        sampled_generated = self._sample_subgraphs(generated_graphs, len(reference_graphs))
+        if sampled_generated is None:
+            sampled_generated = self._sample_subgraphs(generated_graphs, len(reference_graphs))
 
         weighted_degree = self._weighted_degree_stats(reference_graphs, sampled_generated)
 
@@ -1594,16 +1596,14 @@ class WirelessSamplingMetrics:
             networkx_graphs.extend(G)
         return networkx_graphs
 
-    @staticmethod
-    def _edge_value(data: Dict[str, Any]) -> float:
-        return float(data.get("weight", 0.0))
-
     def _collect_edge_values(self, graphs: List[nx.Graph]) -> Dict[tuple, List[float]]:
         edge_vals: Dict[tuple, List[float]] = {}
         for g in graphs:
             for u, v, data in g.edges(data=True):
+                # Use strict physical parameters for statistical edge comparisons across the sets 
+                val = float(data.get("interference_raw", data.get("weight", 0.0)))
                 key = tuple(sorted((int(u), int(v))))
-                edge_vals.setdefault(key, []).append(self._edge_value(data))
+                edge_vals.setdefault(key, []).append(val)
         return edge_vals
 
     def _edge_distribution_metrics(self, reference_graphs: List[nx.Graph], generated_graphs: List[nx.Graph]) -> Dict[str, float]:
@@ -1638,11 +1638,13 @@ class WirelessSamplingMetrics:
         return support, probs
 
     def _sample_subgraphs(self, graphs: List[nx.Graph], num_samples: int) -> List[nx.Graph]:
-        if len(self.test_size_support) == 0:
+        if len(self.test_size_support) == 0 or len(graphs) == 0:
             return []
         sampled_graphs: List[nx.Graph] = []
         sizes = self.rng.choice(self.test_size_support, size=num_samples, p=self.test_size_probs)
-        for g, target_size in zip(graphs, sizes):
+        for target_size in sizes:
+            idx = self.rng.choice(len(graphs))
+            g = graphs[idx]
             nodes = list(g.nodes())
             if len(nodes) <= target_size:
                 sampled_graphs.append(g.copy())
@@ -1653,14 +1655,21 @@ class WirelessSamplingMetrics:
 
     @staticmethod
     def _weighted_degree_stats_worker(G, bins):
-        degrees = np.array([d for _, d in G.degree(weight="weight")], dtype=float)
+        degrees = []
+        for n in G.nodes():
+            # Use `weight_norm` `[0,1]` scale for generated if available, otherwise `weight` `[0,1]` for test set. 
+            # Summing negative dBm values physically misaligns degree comparisons.
+            deg = sum(data.get("weight_norm", data.get("weight", 0.0)) for _, _, data in G.edges(n, data=True))
+            degrees.append(float(deg))
         hist, _ = np.histogram(degrees, bins=bins, density=False)
         return hist
 
     def _weighted_degree_stats(self, reference_graphs: List[nx.Graph], generated_graphs: List[nx.Graph]) -> float:
         all_degrees = []
         for g in reference_graphs + generated_graphs:
-            all_degrees.extend([d for _, d in g.degree(weight="weight")])
+            for n in g.nodes():
+                deg = sum(data.get("weight_norm", data.get("weight", 0.0)) for _, _, data in g.edges(n, data=True))
+                all_degrees.append(float(deg))
 
         max_deg = max(all_degrees) if all_degrees else 1.0
         min_deg = min(all_degrees) if all_degrees else 0.0
