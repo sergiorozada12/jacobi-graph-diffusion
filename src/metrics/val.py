@@ -3,7 +3,10 @@
 # Adapted from https://github.com/lrjconan/GRAN/ which in turn is adapted from https://github.com/JiaxuanYou/graph-generation
 #
 ###############################################################################
-import graph_tool.all as gt
+try:
+    import graph_tool.all as gt
+except ImportError:
+    gt = None
 
 ##Navigate to the ./util/orca directory and compile orca.cpp
 # g++ -O2 -std=c++11 -o orca orca.cpp
@@ -852,6 +855,9 @@ def is_sbm_graph(G, p_intra=0.4, p_inter=0.005, strict=True, refinement_steps=10
     """
     Check if how closely given graph matches a SBM with given probabilites by computing mean probability of Wald test statistic for each recovered parameter
     """
+
+    if gt is None:
+        raise ImportError("graph_tool is required for is_sbm_graph. Please install it or use another metric.")
 
     adj = nx.adjacency_matrix(G).toarray()
     idx = adj.nonzero()

@@ -48,7 +48,7 @@ class DiffusionMolModule(DiffusionBaseModule):
         
         # Re-initialize sampler so it picks up the StickBreaking SDEs from the model
         from src.sample.sampler import Sampler
-        self.sampler = Sampler(cfg=cfg, model=self.model, node_dist=node_dist)
+        self.sampler = Sampler(cfg=cfg, model=self.model, node_dist=node_dist, dataset_info=dataset_info)
         
         self._jacobi_helper = self._build_jacobi_helper(cfg.sde)
 
@@ -96,9 +96,9 @@ class DiffusionMolModule(DiffusionBaseModule):
         noisy_data = {"X_t": Xt_probs, "E_t": Et_probs, "y_t": torch.zeros(B, 0).type_as(Xt)}
         extra_molecular = self.molecular_features(noisy_data)
         
-        # 4. Concatenate for model input (X:19, E:16, y:7)
+        # 4. Concatenate for model input (X:17, E:16, y:7)
         # Primary input is v-space + features
-        X_model = torch.cat([Xt_v, extra_structural.X.float(), extra_molecular.X.float()], dim=-1) # 5 + 12 + 2 = 19
+        X_model = torch.cat([Xt_v, extra_structural.X.float(), extra_molecular.X.float()], dim=-1) # 3 + 12 + 2 = 17
         E_model = torch.cat([Et_v, extra_structural.E.float()], dim=-1)                      # 4 + 12 = 16
         y_model = torch.cat([extra_structural.y.float(), extra_molecular.y.float(), t.unsqueeze(1)], dim=1).float() # 5 + 1 + 1 = 7
         
@@ -139,7 +139,7 @@ class DiffusionMolModule(DiffusionBaseModule):
             noisy_data = {"X_t": Xt_probs, "E_t": Et_probs, "y_t": torch.zeros(B, 0).type_as(X)}
             extra_molecular = self.molecular_features(noisy_data)
 
-            X_model = torch.cat([Xt_v, extra_structural.X.float(), extra_molecular.X.float()], dim=-1)
+            X_model = torch.cat([Xt_v, extra_structural.X.float(), extra_molecular.X.float()], dim=-1) # 3 + 12 + 2 = 17
             E_model = torch.cat([Et_v, extra_structural.E.float()], dim=-1)
             y_model = torch.cat([extra_structural.y.float(), extra_molecular.y.float(), t.unsqueeze(1)], dim=1).float()
 

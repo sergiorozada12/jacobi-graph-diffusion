@@ -40,23 +40,52 @@ class BasicMolecularMetrics:
         results, _ = self.evaluate(mol_list)
         return results
 
-    def compute_validity(self, generated):
+    def compute_validity(self, generated, relaxed=False):
         """
         generated: list of tuples (atom_types, edge_types)
         """
         valid = []
         all_smiles = []
-        for graph in tqdm(generated, desc="Computing validity"):
+        num_components = []
+        lcc_fractions = []
+        
+        for graph in tqdm(generated, desc="Computing validity" if not relaxed else "Computing relaxed validity"):
             atom_types, edge_types = graph
-            mol = build_molecule(atom_types, edge_types, self.atom_decoder)
+            if relaxed:
+                mol = build_molecule_with_partial_charges(atom_types, edge_types, self.atom_decoder)
+            else:
+                mol = build_molecule(atom_types, edge_types, self.atom_decoder)
+            
+            # Basic sanitization and SMILES
             smiles = mol2smiles(mol)
+            
             if smiles is not None:
+                # Handle fragments
+                try:
+                    frags = Chem.rdmolops.GetMolFrags(mol, asMols=True, sanitizeFrags=True)
+                    num_components.append(len(frags))
+                    if len(frags) > 1:
+                        largest_mol = max(frags, key=lambda m: m.GetNumAtoms())
+                        smiles = mol2smiles(largest_mol)
+                        lcc_fractions.append(largest_mol.GetNumAtoms() / mol.GetNumAtoms())
+                    else:
+                        lcc_fractions.append(1.0)
+                except:
+                    num_components.append(1)
+                    lcc_fractions.append(1.0)
+                
                 valid.append(smiles)
                 all_smiles.append(smiles)
             else:
                 all_smiles.append(None)
+                num_components.append(0)
+                lcc_fractions.append(0.0)
         
-        return valid, len(valid) / len(generated) if len(generated) > 0 else 0, all_smiles
+        validity_score = len(valid) / len(generated) if len(generated) > 0 else 0
+        return valid, validity_score, all_smiles, {
+            "num_components": np.mean(num_components) if num_components else 0,
+            "lcc_fraction": np.mean(lcc_fractions) if lcc_fractions else 0
+        }
 
     def compute_uniqueness(self, valid_smiles):
         if len(valid_smiles) == 0:
@@ -71,15 +100,26 @@ class BasicMolecularMetrics:
         return novel_smiles, len(novel_smiles) / len(unique_smiles)
 
     def evaluate(self, generated):
-        valid_smiles, validity, all_smiles = self.compute_validity(generated)
-        unique_smiles, uniqueness = self.compute_uniqueness(valid_smiles)
-        _, novelty = self.compute_novelty(unique_smiles)
+        # Strict metrics
+        strict_valid_smiles, strict_validity, _, strict_info = self.compute_validity(generated, relaxed=False)
+        strict_unique_smiles, strict_uniqueness = self.compute_uniqueness(strict_valid_smiles)
+        _, strict_novelty = self.compute_novelty(strict_unique_smiles)
+        
+        # Relaxed metrics
+        relaxed_valid_smiles, relaxed_validity, _, relaxed_info = self.compute_validity(generated, relaxed=True)
+        relaxed_unique_smiles, relaxed_uniqueness = self.compute_uniqueness(relaxed_valid_smiles)
+        _, relaxed_novelty = self.compute_novelty(relaxed_unique_smiles)
         
         return {
-            "validity": validity,
-            "uniqueness": uniqueness,
-            "novelty": novelty
-        }, all_smiles
+            "validity": strict_validity,
+            "uniqueness": strict_uniqueness,
+            "novelty": strict_novelty,
+            "relaxed_validity": relaxed_validity,
+            "relaxed_uniqueness": relaxed_uniqueness,
+            "relaxed_novelty": relaxed_novelty,
+            "mean_components": relaxed_info["num_components"],
+            "mean_lcc_fraction": relaxed_info["lcc_fraction"]
+        }, relaxed_valid_smiles
 
 def mol2smiles(mol):
     if mol is None:

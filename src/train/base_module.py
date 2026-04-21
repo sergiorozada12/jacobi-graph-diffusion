@@ -59,7 +59,7 @@ class DiffusionBaseModule(pl.LightningModule):
             act_fn_out=torch.nn.ReLU(),
         )
 
-        self.sampler = Sampler(cfg=cfg, model=self.model, node_dist=node_dist)
+        self.sampler = Sampler(cfg=cfg, model=self.model, node_dist=node_dist, dataset_info=dataset_info)
         self.sde = self._build_sde(cfg.sde)
         self.feature_extractor = ExtraFeatures(
             extra_features_type=cfg.model.extra_features_type,

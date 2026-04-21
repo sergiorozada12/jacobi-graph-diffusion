@@ -12,15 +12,15 @@ class GeneralConfig:
 
 @dataclass
 class SamplerConfig:
-    noise_removal: bool = True
-    eps_time: float = 1e-3
+    noise_removal: bool = False
+    eps_time: float = 1e-9
     time_schedule: str = "cosine"
     time_schedule_power: float = 2.0
-    n_steps: int = 100
-    predictor: str = "em" 
+    n_steps: int = 1
+    predictor: str = "heun" 
     num_nodes: int = 9
     snr: float = 1.0
-    scale_eps: float = 2.0
+    scale_eps: float = 0.01
     use_corrector: bool = False
     test_graphs: Optional[int] = 50
 
@@ -77,7 +77,7 @@ class TrainConfig:
     eps_sde_train: float = 1e-1
     time_schedule_train: str = "cosine"
     time_schedule_power_train: float = 2.0
-    num_epochs: int = 2000
+    num_epochs: int = 4000
     lambda_train: float = 1.0 # total multiplier
     lambda_node: float = 1.0
     lambda_edge: float = 10.0 # Edges are harder
@@ -90,12 +90,12 @@ class SDEConfig:
     type: str = "stick_breaking"
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 100
+    num_scales: int = 200
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 100 # 50 # 30
+    order: int = 50 # 50 # 30
     sample_target: bool = True
-    eps_sde: float = 1e-2
+    eps_sde: float = 1e-9
     eps_score: float = 1e-10
 
 @dataclass

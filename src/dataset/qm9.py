@@ -45,6 +45,7 @@ class QM9DatasetModule(pl.LightningDataModule):
             "atom_weights": {0: 12, 1: 14, 2: 16, 3: 19},  # C, N, O, F
             "max_weight": 390
         })
+        self._train_smiles_cache = None
 
     def setup(self, stage=None):
         # We expect raw data in DeFoG's directory as specified in the plan
@@ -228,20 +229,26 @@ class QM9DatasetModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.test_ds, batch_size=self.batch_size, shuffle=False)
 
-    def node_counts(self):
-        all_counts = torch.zeros(self.max_node_num + 1)
+    def node_counts(self, max_nodes_possible=None):
+        if max_nodes_possible is None:
+            max_nodes_possible = self.max_node_num + 1
+        all_counts = torch.zeros(max_nodes_possible)
         for batch in self.train_dataloader():
             masks = batch[2]
             counts = masks.sum(dim=1).long()
             for c in counts:
-                all_counts[c] += 1
+                if c < max_nodes_possible:
+                    all_counts[c] += 1
         return all_counts / all_counts.sum()
 
     def train_smiles(self):
         """Return a set of canonical SMILES strings for the training set (used for novelty)."""
+        if self._train_smiles_cache is not None:
+            return self._train_smiles_cache
+
         from src.metrics.mol_metrics import build_molecule, mol2smiles
         smiles_set = set()
-        for batch in self.train_dataloader():
+        for batch in tqdm(self.train_dataloader(), desc="Precomputing train SMILES"):
             X_batch, E_batch, M_batch = batch
             # X_batch is one-hot [B, N, num_atom_types+1], take argmax to get indices
             X_idx = X_batch.argmax(dim=-1)  # [B, N]
@@ -254,4 +261,5 @@ class QM9DatasetModule(pl.LightningDataModule):
                 smi = mol2smiles(mol)
                 if smi is not None:
                     smiles_set.add(smi)
+        self._train_smiles_cache = smiles_set
         return smiles_set

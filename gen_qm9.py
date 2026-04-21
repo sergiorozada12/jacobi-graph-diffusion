@@ -17,7 +17,7 @@ def parse_args():
     parser.add_argument(
         "--num-samples",
         type=int,
-        default=1000,
+        default=100,
         help="Number of molecules to sample.",
     )
     parser.add_argument(
@@ -99,7 +99,8 @@ def main():
             print(f"Overriding max_node_num to {args.max_nodes} for OOD generation.")
 
     node_dist = build_node_distribution(cfg, datamodule, args.min_nodes, args.max_nodes)
-    sampling_metrics = BasicMolecularMetrics(dataset_info=datamodule.dataset_info)
+    train_smiles = datamodule.train_smiles()
+    sampling_metrics = BasicMolecularMetrics(dataset_info=datamodule.dataset_info, train_smiles=train_smiles)
 
     # We load via the module class to ensure SDEs and model are correctly linked
     module = DiffusionMolModule(
@@ -140,8 +141,16 @@ def main():
 
     print('------------------------------------------------------------------------------------')
     print("QM9 Generation Results:")
-    for k, v in metrics.items():
-        print(f"{k}: {v}")
+    print(f"Validity (strict):    {metrics['validity']:.4f}")
+    print(f"Uniqueness (strict):  {metrics['uniqueness']:.4f}")
+    print(f"Novelty (strict):     {metrics['novelty']:.4f}")
+    print("-" * 20)
+    print(f"Validity (relaxed):   {metrics['relaxed_validity']:.4f}")
+    print(f"Uniqueness (relaxed): {metrics['relaxed_uniqueness']:.4f}")
+    print(f"Novelty (relaxed):    {metrics['relaxed_novelty']:.4f}")
+    print("-" * 20)
+    print(f"Mean components:      {metrics['mean_components']:.4f}")
+    print(f"Mean LCC fraction:    {metrics['mean_lcc_fraction']:.4f}")
     print('------------------------------------------------------------------------------------')
 
     if args.vis_out:

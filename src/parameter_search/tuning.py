@@ -29,6 +29,8 @@ from src.metrics.val import (
 from src.parameter_search.persistence import HyperparamStore
 from src.models.transformer_model import GraphTransformer
 from src.sample.sampler import Sampler
+from src.dataset.qm9 import QM9DatasetModule
+from src.metrics.mol_metrics import BasicMolecularMetrics
 
 
 @dataclass
@@ -132,6 +134,7 @@ def resolve_metrics_name(dataset_name: str, override: Optional[str]) -> str:
         ("protein", "protein"),
         ("imdb", "imdb"),
         ("metrofi", "metrofi"),
+        ("qm9", "qm9"),
     ]
     for pattern, alias in mapping:
         if pattern in name:
@@ -150,6 +153,7 @@ def resolve_metrics_class(alias: str) -> Type[SpectreSamplingMetrics]:
         "protein": ProteinSamplingMetrics,
         "imdb": IMDBSamplingMetrics,
         "metrofi": WirelessSamplingMetrics,
+        "qm9": BasicMolecularMetrics,
     }
     if alias not in metrics_map:
         raise ValueError(
@@ -193,6 +197,24 @@ def build_model(cfg):
         act_fn_in=torch.nn.ReLU(),
         act_fn_out=torch.nn.ReLU(),
     )
+    if "qm9" in cfg.data.data.lower():
+        from src.sde.sde import StickBreakingJacobiSDE
+        model.sde_X = StickBreakingJacobiSDE(
+            K=cfg.dataset.node_n_types,
+            alpha=cfg.sde.alpha,
+            beta=cfg.sde.beta,
+            s_min=cfg.sde.s_min,
+            s_max=cfg.sde.s_max,
+            num_scales=cfg.sde.num_scales,
+        )
+        model.sde_E = StickBreakingJacobiSDE(
+            K=cfg.dataset.edge_n_types,
+            alpha=cfg.sde.alpha,
+            beta=cfg.sde.beta,
+            s_min=cfg.sde.s_min,
+            s_max=cfg.sde.s_max,
+            num_scales=cfg.sde.num_scales,
+        )
     return model
 
 
@@ -383,7 +405,12 @@ def evaluate_trial(
 
     pl.seed_everything(trial_seed, workers=True)
 
-    sampler = Sampler(cfg=trial_cfg, model=model, node_dist=node_dist)
+    sampler = Sampler(
+        cfg=trial_cfg, 
+        model=model, 
+        node_dist=node_dist, 
+        dataset_info=getattr(datamodule, "dataset_info", None)
+    )
     sampler.model.eval()
 
     with torch.inference_mode():
@@ -474,7 +501,9 @@ def run_tuning(base_cfg, settings: TuningSettings):
 
     pl.seed_everything(cfg.general.seed, workers=True)
 
-    if "metrofi" in cfg.data.data.lower():
+    if "qm9" in cfg.data.data.lower():
+        datamodule = QM9DatasetModule(cfg)
+    elif "metrofi" in cfg.data.data.lower():
         from src.dataset.wireless import WirelessDatasetModule
         datamodule = WirelessDatasetModule(cfg)
     else:
@@ -485,10 +514,18 @@ def run_tuning(base_cfg, settings: TuningSettings):
     metrics_alias = resolve_metrics_name(cfg.data.data, settings.metrics_alias)
     metrics_cls = resolve_metrics_class(metrics_alias)
 
-    metrics_for_ref = metrics_cls(datamodule)
-    with maybe_silence(settings.suppress_external_output and not settings.verbose):
-        ref_metrics = compute_reference_metrics(datamodule, metrics_for_ref)
-    metrics_module = metrics_cls(datamodule)
+    if metrics_alias == "qm9":
+        # for QM9, extract train smiles for novelty calculation
+        train_smiles_set = datamodule.train_smiles()
+        # QM9 metrics take dataset_info and train_smiles
+        metrics_for_ref = metrics_cls(datamodule.dataset_info, train_smiles=train_smiles_set)
+        ref_metrics = None
+        metrics_module = metrics_cls(datamodule.dataset_info, train_smiles=train_smiles_set)
+    else:
+        metrics_for_ref = metrics_cls(datamodule)
+        with maybe_silence(settings.suppress_external_output and not settings.verbose):
+            ref_metrics = compute_reference_metrics(datamodule, metrics_for_ref)
+        metrics_module = metrics_cls(datamodule)
 
     metrics_module_specific = None
     ref_metrics_specific = None
@@ -496,17 +533,24 @@ def run_tuning(base_cfg, settings: TuningSettings):
         cfg_specific = clone_config(cfg)
         cfg_specific.data.data = f"{cfg.data.data}_{settings.min_nodes}"
         try:
-            if "metrofi" in cfg_specific.data.data.lower():
+            if "qm9" in cfg_specific.data.data.lower():
+                datamodule_specific = QM9DatasetModule(cfg_specific)
+            elif "metrofi" in cfg_specific.data.data.lower():
                 from src.dataset.wireless import WirelessDatasetModule
                 datamodule_specific = WirelessDatasetModule(cfg_specific)
             else:
                 datamodule_specific = SpectreDatasetModule(cfg_specific)
             with maybe_silence(settings.suppress_external_output and not settings.verbose):
                 datamodule_specific.setup()
-            metrics_for_ref_specific = metrics_cls(datamodule_specific)
-            with maybe_silence(settings.suppress_external_output and not settings.verbose):
-                ref_metrics_specific = compute_reference_metrics(datamodule_specific, metrics_for_ref_specific)
-            metrics_module_specific = metrics_cls(datamodule_specific)
+            if metrics_alias == "qm9":
+                metrics_for_ref_specific = metrics_cls(datamodule_specific.dataset_info, train_smiles=train_smiles_set)
+                ref_metrics_specific = None
+                metrics_module_specific = metrics_cls(datamodule_specific.dataset_info, train_smiles=train_smiles_set)
+            else:
+                metrics_for_ref_specific = metrics_cls(datamodule_specific)
+                with maybe_silence(settings.suppress_external_output and not settings.verbose):
+                    ref_metrics_specific = compute_reference_metrics(datamodule_specific, metrics_for_ref_specific)
+                metrics_module_specific = metrics_cls(datamodule_specific)
         except Exception as e:
             print(f"Failed to setup node-specific metrics for {cfg_specific.data.data}: {e}")
             metrics_module_specific = None
@@ -610,7 +654,14 @@ def run_tuning(base_cfg, settings: TuningSettings):
                 continue
 
             if settings.verbose:
-                print(f"Objective ({objective_key}) = {obj_value}")
+                msg = f"Objective ({objective_key}) = {obj_value}"
+                if "validity" in trial_metrics:
+                    msg += f", val(s/r) = {trial_metrics['validity']:.4f}/{trial_metrics.get('relaxed_validity', 0):.4f}"
+                if "uniqueness" in trial_metrics:
+                    msg += f", uniq(s/r) = {trial_metrics['uniqueness']:.4f}/{trial_metrics.get('relaxed_uniqueness', 0):.4f}"
+                if "novelty" in trial_metrics:
+                    msg += f", novel(s/r) = {trial_metrics['novelty']:.4f}/{trial_metrics.get('relaxed_novelty', 0):.4f}"
+                print(msg)
 
             record = store.record_success(
                 params,
