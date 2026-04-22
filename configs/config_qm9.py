@@ -77,7 +77,7 @@ class TrainConfig:
     eps_sde_train: float = 1e-1
     time_schedule_train: str = "cosine"
     time_schedule_power_train: float = 2.0
-    num_epochs: int = 4000
+    num_epochs: int = 8000
     lambda_train: float = 1.0 # total multiplier
     lambda_node: float = 1.0
     lambda_edge: float = 10.0 # Edges are harder
@@ -90,7 +90,7 @@ class SDEConfig:
     type: str = "stick_breaking"
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 200
+    num_scales: int = 100
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 50 # 50 # 30
