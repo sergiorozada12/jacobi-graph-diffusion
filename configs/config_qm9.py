@@ -14,7 +14,7 @@ class GeneralConfig:
 class SamplerConfig:
     noise_removal: bool = False
     eps_time: float = 1e-9
-    time_schedule: str = "cosine"
+    time_schedule: str = "log"
     time_schedule_power: float = 2.0
     n_steps: int = 1
     predictor: str = "heun" 
@@ -73,11 +73,11 @@ class TrainConfig:
     lr: float = 2e-4
     amsgrad: bool = True
     weight_decay: float = 1e-12
-    eps_time_train: float = 1e-5
-    eps_sde_train: float = 1e-1
-    time_schedule_train: str = "cosine"
+    eps_time_train: float = 1e-3
+    eps_sde_train: float = 1e-3
+    time_schedule_train: str = "log"
     time_schedule_power_train: float = 2.0
-    num_epochs: int = 8000
+    num_epochs: int = 5000
     lambda_train: float = 1.0 # total multiplier
     lambda_node: float = 1.0
     lambda_edge: float = 10.0 # Edges are harder
