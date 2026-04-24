@@ -13,6 +13,7 @@ test*
 nohup*
 *.sh
 sweep*
+results*
 
 # C extensions
 *.so

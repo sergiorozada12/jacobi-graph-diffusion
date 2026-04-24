@@ -20,7 +20,7 @@ class SamplerConfig:
     scale_eps: float = 2.0
     n_steps: int = 2
     num_nodes: int = 60
-    test_graphs: int = 64
+    test_graphs: int = 16
     use_corrector: bool = False
     predictor: str = "milstein"  # "em" or "milstein" or "heun"
 
@@ -29,7 +29,7 @@ class SamplerConfig:
 class DataConfig:
     dir: str = "data"
     data: str = "pa_graphon"
-    batch_size: int = 64
+    batch_size: int = 16
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -94,7 +94,7 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 200
+    num_scales: int = 1_000
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 30 # 30

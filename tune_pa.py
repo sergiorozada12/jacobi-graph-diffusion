@@ -33,7 +33,7 @@ def main():
         sample_target=[True],
         eps_sde=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
         eps_score=[1e-10],
-        time_schedule=["cosine"],
+        time_schedule=["cosine", "log"],
         predictor=["milstein"],
         eps_time=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
         use_corrector=[False],
@@ -43,12 +43,12 @@ def main():
     )
 
     settings = TuningSettings(
-        objective="average_ratio",
+        objective="pa_accuracy",
         metric_key=None,
         metrics_alias=None,
         max_trials=None,
         seed=None,
-        device='cuda:0',
+        device='cuda:1',
         num_graphs=None,
         results_path=None,
         verbose=True,
