@@ -13,8 +13,8 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 0.0001 # 0.002 #1e-5
-    time_schedule: str = "cosine"
+    eps_time: float = 2e-6 #1e-6
+    time_schedule: str = "log"
     time_schedule_power: float = 2.0
     snr: float = 1.0
     scale_eps: float = 2.0
@@ -99,7 +99,7 @@ class SDEConfig:
     s_max: float = 1.0
     order: int = 30 # 30
     sample_target: bool = True
-    eps_sde: float = 1e-9 # 0.001 # 1e-5
+    eps_sde: float = 0.001 # 0.001 # 1e-5
     eps_score: float = 1e-10
 
 
