@@ -21,7 +21,7 @@ def main():
         time_schedule=["log"],
         predictor=["em"],
         eps_time=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-8, 1e-9],
-        use_corrector=[False, True], 
+        use_corrector=[False], 
         snr=[1.0, 0.1, 0.01, 0.001],
         scale_eps=[1.0, 0.1, 0.01, 0.001],
         n_steps=[1, 2, 5],

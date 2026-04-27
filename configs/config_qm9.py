@@ -90,13 +90,14 @@ class SDEConfig:
     type: str = "stick_breaking"
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 100
+    num_scales: int = 200
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 50 # 50 # 30
     sample_target: bool = True
     eps_sde: float = 1e-9
     eps_score: float = 1e-10
+    use_empirical_marginal: bool = True
 
 @dataclass
 class MainConfig:

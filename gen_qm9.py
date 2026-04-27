@@ -110,6 +110,9 @@ def main():
         node_dist=node_dist,
     )
     
+    if getattr(cfg.sde, "use_empirical_marginal", False):
+        module._compute_and_set_empirical_marginals(datamodule)
+    
     ckpt_dir = Path("checkpoints") / cfg.data.data
     ema_path = ckpt_dir / "weights_ema.pth"
     weights_path = ckpt_dir / "weights.pth"

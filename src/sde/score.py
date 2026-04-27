@@ -42,10 +42,10 @@ class JacobiScore:
         self.direct_model_score = direct_model_score
         if self.model is not None:
             self.model.eval()
-        self.alpha = float(alpha)
-        self.beta = float(beta)
-        self.jacobi_a = self.beta - 1.0
-        self.jacobi_b = self.alpha - 1.0
+        self.alpha = torch.tensor(alpha, dtype=torch.float64) if not isinstance(alpha, float) else float(alpha)
+        self.beta = torch.tensor(beta, dtype=torch.float64) if not isinstance(beta, float) else float(beta)
+        self.jacobi_a = self.beta - 1.0 if not torch.is_tensor(self.beta) else self.beta - 1.0
+        self.jacobi_b = self.alpha - 1.0 if not torch.is_tensor(self.alpha) else self.alpha - 1.0
 
     def _jacobi_polynomials(self, x, order, a, b):
         if order <= 0:
@@ -85,8 +85,11 @@ class JacobiScore:
 
         return torch.stack(polys, dim=-1)
 
-    def jacobi_poly_and_derivative(self, x):
-        P_stack = self._jacobi_polynomials(x, self.order, self.jacobi_a, self.jacobi_b)
+    def jacobi_poly_and_derivative(self, x, a=None, b=None):
+        if a is None: a = self.jacobi_a
+        if b is None: b = self.jacobi_b
+
+        P_stack = self._jacobi_polynomials(x, self.order, a, b)
 
         if self.order == 1:
             dP_stack = torch.zeros_like(P_stack)
@@ -95,21 +98,35 @@ class JacobiScore:
         shifted = self._jacobi_polynomials(
             x,
             self.order - 1,
-            self.jacobi_a + 1.0,
-            self.jacobi_b + 1.0,
+            a + 1.0,
+            b + 1.0,
         )
 
         device, dtype = x.device, x.dtype
         n = torch.arange(1, self.order, dtype=dtype, device=device)
-        factors = 0.5 * (n + self.jacobi_a + self.jacobi_b + 1.0)
-        shape = (1,) * x.ndim + (self.order - 1,)
-        factors = factors.view(shape)
+        a_t = a.to(device) if torch.is_tensor(a) else a
+        b_t = b.to(device) if torch.is_tensor(b) else b
+        
+        if torch.is_tensor(a_t) and a_t.ndim > 0:
+            factors = 0.5 * (n.unsqueeze(0) + a_t.unsqueeze(-1) + b_t.unsqueeze(-1) + 1.0) # [K-1, order-1]
+            shape = (1,) * (x.ndim - 1) + factors.shape
+            factors = factors.view(shape)
+        else:
+            factors = 0.5 * (n + a_t + b_t + 1.0)
+            shape = (1,) * x.ndim + (self.order - 1,)
+            factors = factors.view(shape)
 
         dP_stack = torch.zeros_like(P_stack)
         dP_stack[..., 1:] = shifted * factors
         return P_stack, dP_stack
 
-    def jacobi_score(self, adj_0, adj, t):
+    def jacobi_score(self, adj_0, adj, t, alpha=None, beta=None):
+        if alpha is None: alpha = self.alpha
+        if beta is None: beta = self.beta
+        
+        jacobi_a = beta - 1.0 if not torch.is_tensor(beta) else beta - 1.0
+        jacobi_b = alpha - 1.0 if not torch.is_tensor(alpha) else alpha - 1.0
+
         orig_dtype = adj.dtype
         adj_0 = adj_0.to(torch.float64)
         adj = adj.to(torch.float64)
@@ -118,33 +135,69 @@ class JacobiScore:
         x0 = 2.0 * adj_0 - 1.0  # [B, N, N]
         xt = 2.0 * adj - 1.0    # [B, N, N]
 
-        P_x0, _ = self.jacobi_poly_and_derivative(x0)     # [B, N, N, order]
-        P_xt, dP_xt = self.jacobi_poly_and_derivative(xt) # [B, N, N, order]
+        P_x0, _ = self.jacobi_poly_and_derivative(x0, jacobi_a, jacobi_b)     # [B, N, N, order]
+        P_xt, dP_xt = self.jacobi_poly_and_derivative(xt, jacobi_a, jacobi_b) # [B, N, N, order]
 
         device = adj.device
         n = torch.arange(self.order, dtype=torch.float64, device=device)
-        lambdas = 0.5 * n * (n + self.alpha + self.beta - 1.0)
-        lambdas = lambdas[None, None, None, :]
+        
+        alpha_t = alpha.to(device) if torch.is_tensor(alpha) else alpha
+        beta_t = beta.to(device) if torch.is_tensor(beta) else beta
+        a_t = jacobi_a.to(device) if torch.is_tensor(jacobi_a) else torch.tensor(jacobi_a, dtype=torch.float64, device=device)
+        b_t = jacobi_b.to(device) if torch.is_tensor(jacobi_b) else torch.tensor(jacobi_b, dtype=torch.float64, device=device)
 
-        a = torch.tensor(self.jacobi_a, dtype=torch.float64, device=device)
-        b = torch.tensor(self.jacobi_b, dtype=torch.float64, device=device)
-        raw_weights = 2.0 * n + a + b + 1.0
+        if torch.is_tensor(alpha_t) and alpha_t.ndim > 0:
+            n_view = n.unsqueeze(0)
+            alpha_view = alpha_t.unsqueeze(-1)
+            beta_view = beta_t.unsqueeze(-1)
+            lambdas = 0.5 * n_view * (n_view + alpha_view + beta_view - 1.0)
+            shape = (1,) * (adj.ndim - 1) + lambdas.shape
+            lambdas = lambdas.view(shape)
+            
+            a_view = a_t.unsqueeze(-1)
+            b_view = b_t.unsqueeze(-1)
+            raw_weights = 2.0 * n_view + a_view + b_view + 1.0
+        else:
+            lambdas = 0.5 * n * (n + alpha_t + beta_t - 1.0)
+            shape = (1,) * adj.ndim + lambdas.shape
+            lambdas = lambdas.view(shape)
+            raw_weights = 2.0 * n + a_t + b_t + 1.0
 
         log_weights = torch.empty_like(raw_weights)
         general_mask = ~( (n == 0) & (torch.abs(raw_weights) < 1e-12) )
         if general_mask.any():
-            n_gen = n[general_mask]
+            if torch.is_tensor(alpha_t) and alpha_t.ndim > 0:
+                n_gen = n_view.expand_as(raw_weights)[general_mask]
+                a_gen = a_view.expand_as(raw_weights)[general_mask]
+                b_gen = b_view.expand_as(raw_weights)[general_mask]
+            else:
+                n_gen = n[general_mask]
+                a_gen = a_t
+                b_gen = b_t
             raw_gen = raw_weights[general_mask]
             log_weights[general_mask] = (
                 torch.log(torch.abs(raw_gen))
-                + torch.lgamma(n_gen + a + 1.0)
-                + torch.lgamma(n_gen + b + 1.0)
+                + torch.lgamma(n_gen + a_gen + 1.0)
+                + torch.lgamma(n_gen + b_gen + 1.0)
                 - torch.lgamma(n_gen + 1.0)
-                - torch.lgamma(n_gen + a + b + 1.0)
+                - torch.lgamma(n_gen + a_gen + b_gen + 1.0)
             )
 
         if (~general_mask).any():
-            log_weights[~general_mask] = torch.lgamma(a + 1.0) + torch.lgamma(b + 1.0)
+            if torch.is_tensor(alpha_t) and alpha_t.ndim > 0:
+                a_gen = a_view.expand_as(raw_weights)[~general_mask]
+                b_gen = b_view.expand_as(raw_weights)[~general_mask]
+            else:
+                a_gen = a_t
+                b_gen = b_t
+            log_weights[~general_mask] = torch.lgamma(a_gen + 1.0) + torch.lgamma(b_gen + 1.0)
+            
+        if torch.is_tensor(alpha_t) and alpha_t.ndim > 0:
+            shape = (1,) * (adj.ndim - 1) + log_weights.shape
+            log_weights = log_weights.view(shape)
+        else:
+            shape = (1,) * adj.ndim + log_weights.shape
+            log_weights = log_weights.view(shape)
 
         # Shape-agnostic broadcasting for t and lambdas
         # t is [B], adj is [B, ...]
@@ -331,7 +384,7 @@ class JacobiScore:
         v_0 = sde_sb.x_to_v(X_0)
         v_t = sde_sb.x_to_v(state_t)
         
-        score_v = self.jacobi_score(v_0, v_t, t).float()
+        score_v = self.jacobi_score(v_0, v_t, t, alpha=sde_sb.alpha, beta=sde_sb.beta).float()
         if mask is not None:
              # v has shape [..., K-1], mask needs to broadcast
              score_v = score_v * mask.unsqueeze(-1) if mask.ndim < score_v.ndim else score_v * mask

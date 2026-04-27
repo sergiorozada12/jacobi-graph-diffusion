@@ -55,7 +55,7 @@ def main():
 
     trainer = Trainer(
         accelerator=cfg.general.device,
-        devices=[1],
+        devices=[0],
         max_epochs=cfg.train.num_epochs,
         check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
         log_every_n_steps=1,

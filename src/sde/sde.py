@@ -13,8 +13,8 @@ class JacobiSDE(nn.Module):
     def __init__(self, num_scales=1000, alpha=1.0, beta=1.0, s_min=0.1, s_max=2.0, eps=1e-5):
         super().__init__()
         self.num_scales = int(num_scales)
-        self.alpha = float(alpha)
-        self.beta = float(beta)
+        self.alpha = torch.tensor(alpha, dtype=torch.float32) if not isinstance(alpha, float) else float(alpha)
+        self.beta = torch.tensor(beta, dtype=torch.float32) if not isinstance(beta, float) else float(beta)
         self.s_min = float(s_min)
         self.s_max = float(s_max)
         self.eps = float(eps)
@@ -45,7 +45,9 @@ class JacobiSDE(nn.Module):
         while s.ndim < x.ndim:
             s = s.unsqueeze(-1)
 
-        drift = 0.5 * s * (self.alpha * (1.0 - x) - self.beta * x)
+        alpha = self.alpha.to(x.device) if torch.is_tensor(self.alpha) else self.alpha
+        beta = self.beta.to(x.device) if torch.is_tensor(self.beta) else self.beta
+        drift = 0.5 * s * (alpha * (1.0 - x) - beta * x)
         diffusion_2 = (s * x * (1.0 - x))
         diffusion = torch.sqrt(diffusion_2).clamp_min(self.eps)
         diffusion_grad = 0.5 * s * (1.0 - 2.0 * x) / diffusion.clamp_min(self.eps)
@@ -147,20 +149,33 @@ class JacobiSDE(nn.Module):
         else:
             device = torch.device(device)
 
-        if self.alpha == 1.0 and self.beta == 1.0:
+        is_alpha_one = (self.alpha == 1.0).all() if torch.is_tensor(self.alpha) else self.alpha == 1.0
+        is_beta_one = (self.beta == 1.0).all() if torch.is_tensor(self.beta) else self.beta == 1.0
+
+        if is_alpha_one and is_beta_one:
             base = torch.rand(*shape, device=device)
         else:
             dtype = torch.get_default_dtype()
-            alpha = torch.tensor(self.alpha, dtype=dtype)
-            beta = torch.tensor(self.beta, dtype=dtype)
-            base = torch.distributions.Beta(alpha, beta).sample(shape)
-            base = base.to(device)
-        base = base.triu(1)
+            alpha = self.alpha.to(dtype=dtype, device=device) if torch.is_tensor(self.alpha) else torch.tensor(self.alpha, dtype=dtype, device=device)
+            beta = self.beta.to(dtype=dtype, device=device) if torch.is_tensor(self.beta) else torch.tensor(self.beta, dtype=dtype, device=device)
+            
+            dist = torch.distributions.Beta(alpha, beta)
+            if len(dist.batch_shape) > 0:
+                sample_shape = shape[:-len(dist.batch_shape)]
+            else:
+                sample_shape = shape
+            base = dist.sample(sample_shape).to(device)
+
         if base.ndim == 3 and base.shape[1] == base.shape[2]:
+            base = base.triu(1)
             return base + base.transpose(-1, -2)
         elif base.ndim == 4 and base.shape[1] == base.shape[2]:
              # Categorical Adjacency: [B, N, N, K]
-             return 0.5 * (base + base.transpose(1, 2))
+             N = base.shape[1]
+             mask = torch.triu(torch.ones(N, N, device=device), diagonal=1)
+             mask = mask.view(1, N, N, 1)
+             base = base * mask
+             return base + base.transpose(1, 2)
         else:
              return base
 
@@ -287,7 +302,15 @@ class StickBreakingJacobiSDE(nn.Module):
 
                     drift_X = diff_X = dgrad_X = None
                     if x.X is not None:
-                        drift_X, diff_X, dgrad_X = parent.base_sde._drift_diffusion_and_grad(x.X, t)
+                        sde_X = None
+                        if hasattr(score_fn, 'model') and hasattr(score_fn.model, 'sde_X') and score_fn.model.sde_X is not None:
+                            sde_X = score_fn.model.sde_X
+                            
+                        if sde_X is not None:
+                            drift_X, diff_X, dgrad_X = sde_X.base_sde._drift_diffusion_and_grad(x.X, t)
+                        else:
+                            drift_X, diff_X, dgrad_X = parent.base_sde._drift_diffusion_and_grad(x.X, t)
+                            
                         drift_X  = mask_x(drift_X, flags)
                         diff_X   = mask_x(diff_X, flags)
                         dgrad_X  = mask_x(dgrad_X, flags)

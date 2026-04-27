@@ -61,8 +61,85 @@ class DiffusionMolModule(DiffusionBaseModule):
         helper.alpha = cfg_sde.alpha
         helper.beta = cfg_sde.beta
         helper.jacobi_a = helper.beta - 1.0
-        helper.jacobi_b = helper.alpha - 1.0
+        helper.jacobi_b = helper.alpha - 1.0 if not torch.is_tensor(helper.alpha) else helper.alpha - 1.0
         return helper
+
+    def on_fit_start(self):
+        super().on_fit_start()
+        if getattr(self.cfg.sde, "use_empirical_marginal", False):
+            self._compute_and_set_empirical_marginals()
+
+    def _compute_and_set_empirical_marginals(self, datamodule=None):
+        if datamodule is None:
+            datamodule = self.trainer.datamodule
+        dataloader = datamodule.train_dataloader()
+        
+        node_counts = torch.zeros(self.cfg.dataset.node_n_types, device=self.device)
+        edge_counts = torch.zeros(self.cfg.dataset.edge_n_types, device=self.device)
+        
+        for batch in dataloader:
+            if len(batch) >= 3:
+                X, E, mask = batch[0].to(self.device), batch[1].to(self.device), batch[2].to(self.device)
+            else:
+                continue
+                
+            node_mask = mask.bool().flatten()
+            X_flat = X.reshape(-1, X.shape[-1])[node_mask]
+            node_counts += X_flat.sum(dim=0)
+            
+            edge_mask = (mask.unsqueeze(2) * mask.unsqueeze(1)).bool()
+            diag = torch.eye(mask.shape[1], device=self.device).bool()
+            edge_mask = edge_mask & ~diag.unsqueeze(0)
+            edge_mask_flat = edge_mask.flatten()
+            
+            if E.ndim == 3:
+                E_one_hot = F.one_hot(E.long(), num_classes=self.cfg.dataset.edge_n_types).float()
+                E_flat = E_one_hot.reshape(-1, self.cfg.dataset.edge_n_types)[edge_mask_flat]
+            else:
+                E_flat = E.reshape(-1, E.shape[-1])[edge_mask_flat]
+                
+            edge_counts += E_flat.sum(dim=0)
+
+        node_probs = node_counts / node_counts.sum().clamp_min(1e-6)
+        edge_probs = edge_counts / edge_counts.sum().clamp_min(1e-6)
+        
+        def get_alpha_beta(probs):
+            K = len(probs)
+            alpha = torch.zeros(K - 1, device=self.device)
+            beta = torch.zeros(K - 1, device=self.device)
+            c = 2.0 
+            for i in range(K - 1):
+                rem = probs[i:].sum()
+                if rem > 1e-6:
+                    pi = probs[i] / rem
+                else:
+                    pi = torch.tensor(1.0, device=self.device)
+                alpha[i] = c * pi
+                beta[i] = c * (1.0 - pi)
+            return alpha, beta
+
+        alpha_X, beta_X = get_alpha_beta(node_probs)
+        alpha_E, beta_E = get_alpha_beta(edge_probs)
+        
+        self.sde_X.base_sde.alpha = alpha_X
+        self.sde_X.base_sde.beta = beta_X
+        self.sde_E.base_sde.alpha = alpha_E
+        self.sde_E.base_sde.beta = beta_E
+        
+        # Update Jacobi helper (used analytically)
+        self._jacobi_helper.alpha = alpha_X
+        self._jacobi_helper.beta = beta_X
+        self._jacobi_helper.jacobi_a = beta_X - 1.0
+        self._jacobi_helper.jacobi_b = alpha_X - 1.0
+        
+        if getattr(self, "ema_model", None) is not None:
+            self.ema_model.sde_X.base_sde.alpha = alpha_X
+            self.ema_model.sde_X.base_sde.beta = beta_X
+            self.ema_model.sde_E.base_sde.alpha = alpha_E
+            self.ema_model.sde_E.base_sde.beta = beta_E
+            
+        print(f"Empirical Marginals Set! Node Alpha: {alpha_X.cpu().numpy()}, Beta: {beta_X.cpu().numpy()}")
+        print(f"Empirical Marginals Set! Edge Alpha: {alpha_E.cpu().numpy()}, Beta: {beta_E.cpu().numpy()}")
 
     def _analytic_jacobi_score(self, v_clean, v_noisy, t):
         # Jacobi score is applied per-dimension in v-space
