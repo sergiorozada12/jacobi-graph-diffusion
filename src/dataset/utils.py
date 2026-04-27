@@ -133,7 +133,10 @@ def load_size_ref_metrics(cfg, metrics_cls, target_nodes):
     )
 
     ref_cfg = copy.deepcopy(cfg)
-    ref_cfg.data.data = str(size_ref_path)
+    try:
+        ref_cfg.data.data = str(size_ref_path.relative_to(Path(cfg.data.dir)))
+    except ValueError:
+        ref_cfg.data.data = str(size_ref_path)
     ref_datamodule = SpectreDatasetModule(ref_cfg)
     ref_datamodule.setup()
     ref_sampling_metrics = metrics_cls(ref_datamodule)

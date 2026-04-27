@@ -10,7 +10,13 @@ import pytorch_lightning as pl
 from src.models.transformer_model import GraphTransformer
 from src.dataset.synth import SynthGraphDatasetModule
 from src.dataset.spectre import SpectreDatasetModule
-from src.dataset.utils import DistributionNodes, compute_reference_metrics, load_graphs_pickle, save_graphs_pickle
+from src.dataset.utils import (
+    DistributionNodes,
+    compute_reference_metrics,
+    load_graphs_pickle,
+    load_size_ref_metrics,
+    save_graphs_pickle,
+)
 from src.sample.sampler import Sampler
 #from configs.config_tree import MainConfig
 #from configs.config_planar import MainConfig
@@ -71,7 +77,23 @@ def parse_args():
         default=1,
         help="Number of folds to evaluate. With 1, behaves like standard single evaluation.",
     )
+    parser.add_argument(
+        "--expected-num-graphs",
+        type=int,
+        default=None,
+        help="If set, raise an error unless the loaded/generated graph list has exactly this many graphs.",
+    )
     return parser.parse_args()
+
+
+def _validate_expected_num_graphs(samples, expected_num_graphs):
+    if expected_num_graphs is None:
+        return
+    actual_num_graphs = len(samples)
+    if actual_num_graphs != expected_num_graphs:
+        raise ValueError(
+            f"Expected {expected_num_graphs} graphs, but found {actual_num_graphs}."
+        )
 
 
 def build_node_distribution(cfg, datamodule, min_nodes=None, max_nodes=None):
@@ -216,13 +238,12 @@ def main():
     dataset_specific_name = None
     if args.min_nodes is not None and args.min_nodes == args.max_nodes:
         dataset_specific_name = f"{cfg.data.data}_{args.min_nodes}"
-        cfg_specific = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
-        cfg_specific.data.data = dataset_specific_name
         try:
-            datamodule_specific = SpectreDatasetModule(cfg_specific)
-            datamodule_specific.setup()
-            sampling_metrics_specific = PASamplingMetrics(datamodule_specific)
-            ref_metrics_specific = compute_reference_metrics(datamodule_specific, sampling_metrics_specific)
+            ref_metrics_specific, sampling_metrics_specific = load_size_ref_metrics(
+                cfg=cfg,
+                metrics_cls=PASamplingMetrics,
+                target_nodes=args.min_nodes,
+            )
         except Exception as e:
             print(f"Failed to setup node-specific metrics for {dataset_specific_name}: {e}")
             sampling_metrics_specific = None
@@ -231,6 +252,7 @@ def main():
     if args.load_graphs_path is not None:
         samples = load_graphs_pickle(args.load_graphs_path)
         print(f"Loaded saved graphs from {args.load_graphs_path}")
+        _validate_expected_num_graphs(samples, args.expected_num_graphs)
     else:
         model = GraphTransformer(
             n_layers=cfg.model.n_layers,
@@ -270,6 +292,7 @@ def main():
         save_graphs_path = args.save_graphs_path if args.save_graphs_path else "samples/test_graphs.pkl"
         save_graphs_pickle(samples, save_graphs_path)
         print(f"Saved generated graphs to {save_graphs_path}")
+        _validate_expected_num_graphs(samples, args.expected_num_graphs)
 
     if args.n_folds < 1:
         raise ValueError("--n-folds must be at least 1.")

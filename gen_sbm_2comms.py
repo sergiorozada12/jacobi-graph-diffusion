@@ -121,7 +121,23 @@ def parse_args():
         default=1,
         help="Number of folds to evaluate. With 1, behaves like standard single evaluation.",
     )
+    parser.add_argument(
+        "--expected-num-graphs",
+        type=int,
+        default=None,
+        help="If set, raise an error unless the loaded/generated graph list has exactly this many graphs.",
+    )
     return parser.parse_args()
+
+
+def _validate_expected_num_graphs(samples, expected_num_graphs):
+    if expected_num_graphs is None:
+        return
+    actual_num_graphs = len(samples)
+    if actual_num_graphs != expected_num_graphs:
+        raise ValueError(
+            f"Expected {expected_num_graphs} graphs, but found {actual_num_graphs}."
+        )
 
 
 def _load_graph_transformer_state_dict(raw_ckpt: Dict[str, Any], use_ema: bool) -> Dict[str, Any]:
@@ -312,6 +328,7 @@ def main():
     if args.load_graphs_path is not None:
         samples = load_graphs_pickle(args.load_graphs_path)
         print(f"Loaded saved graphs from {args.load_graphs_path}")
+        _validate_expected_num_graphs(samples, args.expected_num_graphs)
     else:
         model = GraphTransformer(
             n_layers=cfg.model.n_layers,
@@ -356,6 +373,7 @@ def main():
         save_graphs_path = resolve_saved_graphs_output_path(args)
         save_graphs_pickle(samples, save_graphs_path)
         print(f"Saved generated graphs to {save_graphs_path}")
+        _validate_expected_num_graphs(samples, args.expected_num_graphs)
 
     extra_sampling_metrics = None
     if args.average_ratio_to_size_ref:

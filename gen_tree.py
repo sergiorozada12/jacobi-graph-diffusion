@@ -58,6 +58,7 @@ def parse_args():
         help="Override cfg.sde.sample_target.",
     )
     parser.add_argument("--num-scales", type=int, default=None, help="Override cfg.sde.num_scales.")
+    parser.add_argument("--test-graphs", type=int, default=None, help="Override cfg.sampler.test_graphs.")
     parser.add_argument("--eps-sde", type=float, default=None, help="Override cfg.sde.eps_sde.")
     parser.add_argument("--eps-score", type=float, default=None, help="Override cfg.sde.eps_score.")
     parser.add_argument("--time-schedule", type=str, default=None, help="Override cfg.sde.time_schedule.")
@@ -122,7 +123,23 @@ def parse_args():
         default=1,
         help="Number of folds to evaluate. With 1, behaves like standard single evaluation.",
     )
+    parser.add_argument(
+        "--expected-num-graphs",
+        type=int,
+        default=None,
+        help="If set, raise an error unless the loaded/generated graph list has exactly this many graphs.",
+    )
     return parser.parse_args()
+
+
+def _validate_expected_num_graphs(samples, expected_num_graphs):
+    if expected_num_graphs is None:
+        return
+    actual_num_graphs = len(samples)
+    if actual_num_graphs != expected_num_graphs:
+        raise ValueError(
+            f"Expected {expected_num_graphs} graphs, but found {actual_num_graphs}."
+        )
 
 
 def _load_graph_transformer_state_dict(raw_ckpt: Dict[str, Any], use_ema: bool) -> Dict[str, Any]:
@@ -262,14 +279,16 @@ def main():
         cfg.sde.sample_target = args.sample_target.lower() == "true"
     if args.num_scales is not None:
         cfg.sde.num_scales = args.num_scales
+    if args.test_graphs is not None:
+        cfg.sampler.test_graphs = args.test_graphs
     if args.eps_sde is not None:
         cfg.sde.eps_sde = args.eps_sde
     if args.eps_score is not None:
         cfg.sde.eps_score = args.eps_score
     if args.time_schedule is not None:
-        cfg.sde.time_schedule = args.time_schedule
+        cfg.sampler.time_schedule = args.time_schedule
     if args.time_schedule_power is not None:
-        cfg.sde.time_schedule_power = args.time_schedule_power
+        cfg.sampler.time_schedule_power = args.time_schedule_power
     if args.eps_time is not None:
         cfg.sampler.eps_time = args.eps_time
     if args.predictor is not None:
@@ -311,6 +330,7 @@ def main():
     if args.load_graphs_path is not None:
         samples = load_graphs_pickle(args.load_graphs_path)
         print(f"Loaded saved graphs from {args.load_graphs_path}")
+        _validate_expected_num_graphs(samples, args.expected_num_graphs)
     else:
         model = GraphTransformer(
             n_layers=cfg.model.n_layers,
@@ -354,6 +374,7 @@ def main():
         save_graphs_path = resolve_saved_graphs_output_path(args)
         save_graphs_pickle(samples, save_graphs_path)
         print(f"Saved generated graphs to {save_graphs_path}")
+        _validate_expected_num_graphs(samples, args.expected_num_graphs)
 
     extra_sampling_metrics = None
     if args.average_ratio_to_size_ref:
@@ -431,6 +452,8 @@ def main():
     if args.json_out:
         base_keys = ["degree", "clustering", "orbit", "spectre", "wavelet"]
         if args.n_folds > 1:
+            out_path = Path(args.json_out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
             entry = {
                 "size": _resolve_size_summary(samples, args, cfg),
                 "n_folds": args.n_folds,
@@ -438,7 +461,7 @@ def main():
             }
             if "size_ref" in metrics_extra:
                 entry["metrics_mean_std_size_ref"] = metrics_extra["size_ref"]
-            with open(args.json_out, "w") as f:
+            with open(out_path, "w") as f:
                 json.dump(entry, f, indent=2)
             return
         
