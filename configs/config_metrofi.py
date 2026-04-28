@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 
 
 @dataclass
@@ -112,7 +112,7 @@ class SDEConfig:
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 100
-    sample_target: bool = False
+    sample_target: Any = False
     eps_sde: float = 1e-1
     eps_score: float = 1e-10
 

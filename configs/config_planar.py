@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 @dataclass
 class GeneralConfig:
@@ -94,7 +95,7 @@ class SDEConfig:
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 100 # 30 works good for predictor
-    sample_target: bool = False
+    sample_target: Any = False
     eps_sde: float = 1e-2 #3.1622776601e-3 # 3.16 works worse lol
     eps_score: float = 1e-10
 

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 
 @dataclass
 class GeneralConfig:
@@ -98,7 +98,7 @@ class SDEConfig:
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 30 # 30
-    sample_target: bool = True
+    sample_target: Any = "bernouilli"
     eps_sde: float = 0.001 # 0.001 # 1e-5
     eps_score: float = 1e-10
 

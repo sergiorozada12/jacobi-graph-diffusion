@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 
 @dataclass
 class GeneralConfig:
@@ -95,7 +95,7 @@ class SDEConfig:
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 100 # Looks 30 improves for SBM
-    sample_target: bool = True
+    sample_target: Any = True
     eps_sde: float = 1e-6 # 1e-7 becomes stable
     eps_score: float = 1e-10
 

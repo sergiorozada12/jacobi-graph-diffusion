@@ -15,7 +15,7 @@ class JacobiScore:
             max_n_nodes, 
             order=10, 
             eps_score=1e-10, 
-            sample_target=True,
+            sample_target="bernoulli",
             use_sampled_features=True,
             alpha=1.0,
             beta=1.0,
@@ -29,7 +29,12 @@ class JacobiScore:
             rrwp_steps=rrwp_steps,
             max_n_nodes=max_n_nodes,
         )
-        self.sample_target = sample_target
+        if isinstance(sample_target, bool):
+            self.sample_target = "bernoulli" if sample_target else "none"
+        else:
+            self.sample_target = sample_target.lower()
+            if self.sample_target == "bernouilli":
+                self.sample_target = "bernoulli"
         self.decay_cutoff = 1e-12
         self.use_sampled_features = use_sampled_features
         self.direct_model_score = direct_model_score
@@ -186,8 +191,11 @@ class JacobiScore:
         A_0_dist = F.softmax(pred.E, dim=-1)[..., 1:].sum(dim=-1).float()
         A_0_dist = A_0_dist * flags_mask
 
-        if self.sample_target:
+        if self.sample_target == "bernoulli":
             A_0_triu = torch.bernoulli(torch.triu(A_0_dist, diagonal=1))
+            A_0_triu = A_0_triu * flags_mask
+        elif self.sample_target == "argmax":
+            A_0_triu = (torch.triu(A_0_dist, diagonal=1) > 0.5).float()
             A_0_triu = A_0_triu * flags_mask
         else:
             A_0_triu = torch.triu(A_0_dist, diagonal=1)

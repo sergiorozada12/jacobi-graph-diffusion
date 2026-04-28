@@ -71,6 +71,12 @@ def parse_args():
         default=1,
         help="Number of folds to evaluate. With 1, behaves like standard single evaluation.",
     )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Optional path to a specific checkpoint to load (e.g. checkpoints/pa_graphon/epoch=36999.ckpt).",
+    )
     return parser.parse_args()
 
 
@@ -241,19 +247,39 @@ def main():
             act_fn_in=torch.nn.ReLU(),
             act_fn_out=torch.nn.ReLU(),
         )
-        ckpt_dir = Path("checkpoints") / cfg.data.data
-        ema_path = ckpt_dir / "weights_ema.pth"
-        weights_path = ckpt_dir / "weights.pth"
-        if cfg.train.use_ema and ema_path.exists():
-            weight_path = ema_path
-        elif weights_path.exists():
-            weight_path = weights_path
+        if args.checkpoint is not None:
+            weight_path = Path(args.checkpoint)
+            if not weight_path.exists():
+                raise FileNotFoundError(f"Provided checkpoint does not exist: {weight_path}")
         else:
-            raise FileNotFoundError(
-                f"Could not find checkpoint for '{cfg.data.data}'. "
-                f"Looked for {ema_path} and {weights_path}."
-            )
+            ckpt_dir = Path("checkpoints") / cfg.data.data
+            ema_path = ckpt_dir / "weights_ema.pth"
+            weights_path = ckpt_dir / "weights.pth"
+            if cfg.train.use_ema and ema_path.exists():
+                weight_path = ema_path
+            elif weights_path.exists():
+                weight_path = weights_path
+            else:
+                raise FileNotFoundError(
+                    f"Could not find checkpoint for '{cfg.data.data}'. "
+                    f"Looked for {ema_path} and {weights_path}."
+                )
+
         state_dict = torch.load(weight_path, map_location="cpu")
+        
+        # Handle PyTorch Lightning checkpoints
+        if 'state_dict' in state_dict:
+            state_dict = state_dict['state_dict']
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith('model.'):
+                    new_state_dict[k.replace('model.', '', 1)] = v
+                elif k.startswith('ema_model.'):
+                    new_state_dict[k.replace('ema_model.', '', 1)] = v
+                else:
+                    new_state_dict[k] = v
+            state_dict = new_state_dict
+
         model.load_state_dict(state_dict)
         model = model.to(cfg.general.device)
         model.eval()

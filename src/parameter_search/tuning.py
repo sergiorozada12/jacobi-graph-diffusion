@@ -34,7 +34,7 @@ from src.sample.sampler import Sampler
 @dataclass
 class SearchSpace:
     order: Optional[List[int]] = None
-    sample_target: Optional[List[bool]] = None
+    sample_target: Optional[List[Union[bool, str]]] = None
     num_scales: Optional[List[int]] = None
     eps_sde: Optional[List[float]] = None
     eps_score: Optional[List[float]] = None

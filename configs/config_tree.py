@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 @dataclass
 class GeneralConfig:
@@ -94,7 +95,7 @@ class SDEConfig:
     s_min: float = 1.0 # s_min = s_max = 1.0 for beta
     s_max: float = 1.0
     order: int = 100
-    sample_target: bool = True
+    sample_target: Any = True
     eps_sde: float = 0.001
     eps_score: float = 1e-10
 
