@@ -12,9 +12,9 @@ class GeneralConfig:
 
 @dataclass
 class SamplerConfig:
-    noise_removal: bool = False
-    eps_time: float = 1e-9
-    time_schedule: str = "log"
+    noise_removal: bool = True
+    eps_time: float = 1e-3
+    time_schedule: str = "cosine"
     time_schedule_power: float = 2.0
     n_steps: int = 1
     predictor: str = "heun" 
@@ -22,7 +22,8 @@ class SamplerConfig:
     snr: float = 1.0
     scale_eps: float = 0.01
     use_corrector: bool = False
-    test_graphs: Optional[int] = 50
+    test_graphs: Optional[int] = 100
+    quantize_method: str = "argmax"
 
 @dataclass
 class DataConfig:
@@ -75,12 +76,12 @@ class TrainConfig:
     weight_decay: float = 1e-12
     eps_time_train: float = 1e-3
     eps_sde_train: float = 1e-3
-    time_schedule_train: str = "log"
+    time_schedule_train: str = "cosine"
     time_schedule_power_train: float = 2.0
     num_epochs: int = 5000
     lambda_train: float = 1.0 # total multiplier
     lambda_node: float = 1.0
-    lambda_edge: float = 10.0 # Edges are harder
+    lambda_edge: float = 5.0 # Edges are harder
     use_ema: bool = True
     ema_decay: float = 0.999
     training_mode: str = "graph" # Data prediction mode
@@ -90,7 +91,7 @@ class SDEConfig:
     type: str = "stick_breaking"
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 200
+    num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
     order: int = 50 # 50 # 30

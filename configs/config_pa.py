@@ -23,6 +23,7 @@ class SamplerConfig:
     test_graphs: int = 35
     use_corrector: bool = False
     predictor: str = "milstein"  # "em" or "milstein" or "heun"
+    quantize_method: str = "argmax"
 
 
 @dataclass

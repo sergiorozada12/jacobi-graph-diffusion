@@ -219,7 +219,7 @@ class JacobiScore:
         score = grad_xt / density.clamp_min(self.eps)
         return score.to(orig_dtype)
 
-    def compute_score(self, state, flags, t):
+    def compute_score(self, state, flags, t, return_logits=False):
         """
         Unified entry point for score computation. 
         Supports:
@@ -308,6 +308,9 @@ class JacobiScore:
         y_model = torch.cat([extra_structural.y.float(), extra_molecular.y.float(), t.unsqueeze(1)], dim=1).float()
         
         pred = self.model(X_model, E_model, y_model, flags)
+
+        if return_logits:
+            return pred
 
         if self.score_mode == "graph":
             # Data Prediction Mode: pred.X and pred.E are logits for clean signal (X0, E0)

@@ -264,14 +264,14 @@ class LangevinCorrector:
                 step_size = 2.0 * (self.snr * n_norm_E / f_norm_E).pow(2)
                 ss = step_size.view(B, 1, 1) if E0.ndim == 3 else step_size.view(B, 1, 1, 1)
                 
-                E_new = E0 + ss * scoreE + torch.sqrt(2.0 * step_size).view(B, 1, 1, 1 if E0.ndim > 3 else 1) * noiseE * self.scale_eps
+                E_new = E0 + ss * scoreE + torch.sqrt(2.0 * step_size).view(B, 1, 1, 1 if E0.ndim > 3 else 1) * noiseE
                 
                 X_new = X0
                 if X0 is not None:
                      precondX = (X0 * (1.0 - X0)).clamp_min(1e-12)
                      scoreX = precondX * scoreX
                      noiseX = torch.randn_like(X0)
-                     X_new = X0 + step_size.view(B, 1, 1) * scoreX + torch.sqrt(2.0 * step_size).view(B, 1, 1) * noiseX * self.scale_eps
+                     X_new = X0 + step_size.view(B, 1, 1) * scoreX + torch.sqrt(2.0 * step_size).view(B, 1, 1) * noiseX
                 
                 state = PlaceHolder(X=X_new, E=E_new, y=state.y)
                 # Re-apply masking/clamping

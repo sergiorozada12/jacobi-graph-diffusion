@@ -130,7 +130,11 @@ class Sampler:
                 if self.score_mode == "weighted":
                      samples = adj.clamp(0.0, 1.0)
                 else:
-                     samples = quantize(adj)
+                     quantize_method = getattr(self.cfg.sampler, "quantize_method", "argmax")
+                     if quantize_method == "sample":
+                         samples = torch.bernoulli(adj.clamp(0.0, 1.0))
+                     else:
+                         samples = quantize(adj)
                 
                 graphs = adjs_to_graphs(
                     samples,
@@ -144,10 +148,22 @@ class Sampler:
             else:
                 is_joint_flag = True
                 # Joint mode (Molecule)
-                # state is a PlaceHolder with X and E (simplex)
-                # Quantize: argmax for bond types and atom types
-                E_idx = torch.argmax(state.E, dim=-1) # [B, N, N] contains 0..4
-                X_idx = torch.argmax(state.X, dim=-1) # [B, N]
+                # Instead of trying to parse the noisy v-space state, we ask the model
+                # for its final clean prediction (X_0, E_0) at t = eps.
+                eps_t = torch.full((state.E.shape[0],), self.cfg.sampler.eps_time, device=self.device)
+                with torch.no_grad():
+                    pred_logits = self.solver.predictor.score_fn.compute_score(state, flags, eps_t, return_logits=True)
+                
+                E_probs = torch.softmax(pred_logits.E, dim=-1)
+                X_probs = torch.softmax(pred_logits.X, dim=-1) if pred_logits.X is not None else None
+                
+                quantize_method = getattr(self.cfg.sampler, "quantize_method", "argmax")
+                if quantize_method == "sample":
+                    E_idx = torch.distributions.Categorical(probs=E_probs).sample()
+                    X_idx = torch.distributions.Categorical(probs=X_probs).sample() if X_probs is not None else None
+                else:
+                    E_idx = torch.argmax(E_probs, dim=-1) # [B, N, N] contains 0..K_E-1
+                    X_idx = torch.argmax(X_probs, dim=-1) if X_probs is not None else None # [B, N]
                 
                 samples = PlaceHolder(X=X_idx, E=E_idx, y=None)
                 generated.append(samples) # We return PlaceHolders for molecules to be built by Metrics

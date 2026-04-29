@@ -16,11 +16,11 @@ def main():
     search_space = SearchSpace(
         order=[50],
         sample_target=[True],
-        eps_sde=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-8, 1e-9],
+        eps_sde=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
         eps_score=[1e-10],
         time_schedule=["log"],
         predictor=["em"],
-        eps_time=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-8, 1e-9],
+        eps_time=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
         use_corrector=[False], 
         snr=[1.0, 0.1, 0.01, 0.001],
         scale_eps=[1.0, 0.1, 0.01, 0.001],

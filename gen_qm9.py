@@ -44,6 +44,18 @@ def parse_args():
         default=None,
         help="Maximum number of nodes to sample. Requires --min-nodes. Defaults to dataset distribution.",
     )
+    parser.add_argument(
+        "--ckpt-dir",
+        type=str,
+        default=None,
+        help="Custom checkpoint directory.",
+    )
+    parser.add_argument(
+        "--schedule",
+        type=str,
+        default=None,
+        help="Override time schedule (e.g., log, cosine).",
+    )
     return parser.parse_args()
 
 def build_node_distribution(cfg, datamodule, min_nodes=None, max_nodes=None):
@@ -113,7 +125,10 @@ def main():
     if getattr(cfg.sde, "use_empirical_marginal", False):
         module._compute_and_set_empirical_marginals(datamodule)
     
-    ckpt_dir = Path("checkpoints") / cfg.data.data
+    if args.schedule:
+        cfg.sampler.time_schedule = args.schedule
+    
+    ckpt_dir = Path(args.ckpt_dir) if args.ckpt_dir else Path("checkpoints") / cfg.data.data
     ema_path = ckpt_dir / "weights_ema.pth"
     weights_path = ckpt_dir / "weights.pth"
     
