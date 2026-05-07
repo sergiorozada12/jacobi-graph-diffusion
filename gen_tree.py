@@ -134,12 +134,19 @@ def parse_args():
 
 def _validate_expected_num_graphs(samples, expected_num_graphs):
     if expected_num_graphs is None:
-        return
+        return samples
     actual_num_graphs = len(samples)
-    if actual_num_graphs != expected_num_graphs:
+    if actual_num_graphs < expected_num_graphs:
         raise ValueError(
             f"Expected {expected_num_graphs} graphs, but found {actual_num_graphs}."
         )
+    if actual_num_graphs > expected_num_graphs:
+        print(
+            f"INFO: Found {actual_num_graphs} graphs, truncating to the first "
+            f"{expected_num_graphs} to match --expected-num-graphs."
+        )
+        return samples[:expected_num_graphs]
+    return samples
 
 
 def _load_graph_transformer_state_dict(raw_ckpt: Dict[str, Any], use_ema: bool) -> Dict[str, Any]:
@@ -330,7 +337,7 @@ def main():
     if args.load_graphs_path is not None:
         samples = load_graphs_pickle(args.load_graphs_path)
         print(f"Loaded saved graphs from {args.load_graphs_path}")
-        _validate_expected_num_graphs(samples, args.expected_num_graphs)
+        samples = _validate_expected_num_graphs(samples, args.expected_num_graphs)
     else:
         model = GraphTransformer(
             n_layers=cfg.model.n_layers,
@@ -374,7 +381,7 @@ def main():
         save_graphs_path = resolve_saved_graphs_output_path(args)
         save_graphs_pickle(samples, save_graphs_path)
         print(f"Saved generated graphs to {save_graphs_path}")
-        _validate_expected_num_graphs(samples, args.expected_num_graphs)
+        samples = _validate_expected_num_graphs(samples, args.expected_num_graphs)
 
     extra_sampling_metrics = None
     if args.average_ratio_to_size_ref:
@@ -482,7 +489,10 @@ def main():
         entry = {
             "size": _resolve_size_summary(samples, args, cfg),
             "accuracy": metrics.get("tree_acc", 0.0),
-            "acc_extra": {},
+            "acc_extra": {
+                "forest_acc": metrics.get("forest_acc", 0.0),
+                "connected_acc": metrics.get("connected_acc", 0.0),
+            },
             "average_mmd": avg_mmd,
             "metrics": m_dict,
             "metrics_ratio": m_ratios,

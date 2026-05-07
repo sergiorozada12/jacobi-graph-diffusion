@@ -83,17 +83,29 @@ def parse_args():
         default=None,
         help="If set, raise an error unless the loaded/generated graph list has exactly this many graphs.",
     )
+    parser.add_argument(
+        "--skip-size-ref",
+        action="store_true",
+        help="Skip size-specific reference metrics and only compute metrics against the main dataset reference.",
+    )
     return parser.parse_args()
 
 
 def _validate_expected_num_graphs(samples, expected_num_graphs):
     if expected_num_graphs is None:
-        return
+        return samples
     actual_num_graphs = len(samples)
-    if actual_num_graphs != expected_num_graphs:
+    if actual_num_graphs < expected_num_graphs:
         raise ValueError(
             f"Expected {expected_num_graphs} graphs, but found {actual_num_graphs}."
         )
+    if actual_num_graphs > expected_num_graphs:
+        print(
+            f"INFO: Found {actual_num_graphs} graphs, truncating to the first "
+            f"{expected_num_graphs} to match --expected-num-graphs."
+        )
+        return samples[:expected_num_graphs]
+    return samples
 
 
 def build_node_distribution(cfg, datamodule, min_nodes=None, max_nodes=None):
@@ -236,7 +248,11 @@ def main():
     sampling_metrics_specific = None
     ref_metrics_specific = None
     dataset_specific_name = None
-    if args.min_nodes is not None and args.min_nodes == args.max_nodes:
+    if (
+        not args.skip_size_ref
+        and args.min_nodes is not None
+        and args.min_nodes == args.max_nodes
+    ):
         dataset_specific_name = f"{cfg.data.data}_{args.min_nodes}"
         try:
             ref_metrics_specific, sampling_metrics_specific = load_size_ref_metrics(
@@ -252,7 +268,7 @@ def main():
     if args.load_graphs_path is not None:
         samples = load_graphs_pickle(args.load_graphs_path)
         print(f"Loaded saved graphs from {args.load_graphs_path}")
-        _validate_expected_num_graphs(samples, args.expected_num_graphs)
+        samples = _validate_expected_num_graphs(samples, args.expected_num_graphs)
     else:
         model = GraphTransformer(
             n_layers=cfg.model.n_layers,
@@ -292,7 +308,7 @@ def main():
         save_graphs_path = args.save_graphs_path if args.save_graphs_path else "samples/test_graphs.pkl"
         save_graphs_pickle(samples, save_graphs_path)
         print(f"Saved generated graphs to {save_graphs_path}")
-        _validate_expected_num_graphs(samples, args.expected_num_graphs)
+        samples = _validate_expected_num_graphs(samples, args.expected_num_graphs)
 
     if args.n_folds < 1:
         raise ValueError("--n-folds must be at least 1.")
