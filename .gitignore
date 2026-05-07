@@ -216,3 +216,4 @@ data
 # Added by Manuel
 analysis/results/
 src/metrics/orca/tmp_*
+analysis/figures
