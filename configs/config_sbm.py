@@ -41,7 +41,7 @@ class ModelConfig:
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
     use_sampled_features: bool = True
-    n_layers: int = 5
+    n_layers: int = 
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
         "E": 20,    # rrwp_steps

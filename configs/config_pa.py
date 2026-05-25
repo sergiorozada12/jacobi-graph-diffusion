@@ -13,23 +13,22 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 2e-6 #1e-6
+    eps_time: float = 0.0005 # 0.0001 #5e-7 best in 240
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
-    snr: float = 1.0
-    scale_eps: float = 2.0
-    n_steps: int = 2
+    snr: float = 0.01
+    scale_eps: float = 0.0
+    n_steps: int = 1
     num_nodes: int = 60
-    test_graphs: int = 16
-    use_corrector: bool = False
+    test_graphs: int = 12
+    use_corrector: bool = True
     predictor: str = "milstein"  # "em" or "milstein" or "heun"
-
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "pa_graphon"
-    batch_size: int = 16
+    batch_size: int = 64
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -94,12 +93,12 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1_000
+    num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 30 # 30
-    sample_target: Any = "bernouilli"
-    eps_sde: float = 0.001 # 0.001 # 1e-5
+    order: int = 100 # 30
+    sample_target: Any = True
+    eps_sde: float = 0.0001 # 0.001 # 1e-5
     eps_score: float = 1e-10
 
 

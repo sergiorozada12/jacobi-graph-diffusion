@@ -85,6 +85,12 @@ def parse_args():
     parser.add_argument("--scale-eps", type=float, default=None, help="Override cfg.sampler.scale_eps.")
     parser.add_argument("--n-steps", type=int, default=None, help="Override cfg.sampler.n_steps.")
     parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="Number of graphs to sample. Overrides cfg.sampler.test_graphs.",
+    )
+    parser.add_argument(
         "--load-graphs-path",
         type=str,
         default=None,
@@ -348,6 +354,8 @@ def main():
         model.eval()
 
         pl.seed_everything(cfg.general.seed, workers=True)
+        if args.num_samples is not None:
+            cfg.sampler.test_graphs = args.num_samples
         sampler = Sampler(cfg=cfg, model=model, node_dist=node_dist)
         samples, fig = sampler.sample()
 

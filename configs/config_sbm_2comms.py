@@ -13,22 +13,22 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-8 # 1e-11 works good with large number of params
+    eps_time: float = 0.001 # 1e-11 works good with large number of params
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
     snr: float = 0.01
     scale_eps: float = 1.0
     n_steps: int = 1
     num_nodes: int = 80
-    test_graphs: int = 32
+    test_graphs: int = 64
     use_corrector: bool = False
-    predictor: str = "em"  # "em" or "milstein" or "heun" - heun or em good  for 180 but acc 0
+    predictor: str = "heun"  # "em" or "milstein" or "heun" - heun or em good  for 180 but acc 0
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "sbm_2comms_graphon"
-    batch_size: int = 32
+    batch_size: int = 64
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -41,7 +41,7 @@ class ModelConfig:
     extra_features_type: str = 'rrwp'
     rrwp_steps: int = 20
     use_sampled_features: bool = True
-    n_layers: int = 4
+    n_layers: int = 10
     input_dims: dict = field(default_factory=lambda: {
         "X": 20,    # rrwp_steps
         "E": 20,    # rrwp_steps
@@ -94,9 +94,9 @@ class SDEConfig:
     num_scales: int = 1000 # Looks better with 2000 and 3000 improves
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 100 # Looks 30 improves for SBM
+    order: int = 30 # Looks 30 improves for SBM
     sample_target: Any = True
-    eps_sde: float = 1e-6 # 1e-7 becomes stable
+    eps_sde: float = 1e-5 # 1e-7 becomes stable
     eps_score: float = 1e-10
 
 @dataclass

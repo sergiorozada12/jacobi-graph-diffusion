@@ -19,6 +19,12 @@ def parse_args():
         default=None,
         help="Maximum number of nodes to sample during tuning. Requires --min-nodes.",
     )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Optional path to a specific checkpoint to load.",
+    )
     return parser.parse_args()
 
 
@@ -30,7 +36,7 @@ def main():
     
     search_space = SearchSpace(
         order=[100, 30],
-        sample_target=["argmax"],
+        sample_target=[True],
         eps_sde=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9],
         eps_score=[1e-10],
         time_schedule=["log"],
@@ -56,6 +62,7 @@ def main():
         search_space=search_space,
         min_nodes=args.min_nodes,
         max_nodes=args.max_nodes,
+        ckpt_path=args.checkpoint,
     )
 
     run_tuning(cfg, settings)
