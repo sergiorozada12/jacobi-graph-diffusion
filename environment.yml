@@ -270,4 +270,3 @@ dependencies:
       - webencodings==0.5.1
       - yarg==0.1.9
       - yarl==1.20.1
-prefix: /home/srozada/miniconda3/envs/graphon
