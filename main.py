@@ -8,19 +8,6 @@ from pathlib import Path
 from omegaconf import OmegaConf
 import numpy as np
 
-# Professional logging and UI helper functions
-def print_logo():
-    logo = r"""
-   __             _     _    ___  _   __  __          _             
-  / /___ _ ____  (_)___| |  /   /(_) / /_/ /_  __  __| (_)___  ____  
- / / __ `/ ___/ / / __ `/ | / / / / / __/ __ \/ / / / / / __ \/ __ \ 
-/ / /_/ / /__  / / /_/ /| |/ / / / / /_/ / / / /_/ / / / /_/ / / / / 
-\____/\__,_/\___/_/ /\__,_/ |___/_/_/_/\__/_/ /_/\__,_/_/_/\____/_/ /_/  
-               /___/                                                     
-    """
-    print("=" * 80)
-    print(logo)
-    print("=" * 80)
 
 def print_header(title):
     print("\n" + "=" * 80)
@@ -779,7 +766,6 @@ def run_tune(args, cfg, model_name):
 
 # CLI parser and main entrypoint
 def main():
-    print_logo()
 
     # Setup subparsers
     parent_parser = argparse.ArgumentParser(add_help=False)
