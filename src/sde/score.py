@@ -1,11 +1,9 @@
-import math
-
 import torch
 import numpy as np
 
 from src.features.extra_features import ExtraFeatures
 import torch.nn.functional as F
-from src.utils import assert_symmetric_and_masked, assert_symmetric_and_masked_E
+from src.utils import assert_symmetric_and_masked, assert_symmetric_and_masked_E, node_positional_encoding
 
 
 class JacobiScore:
@@ -176,25 +174,10 @@ class JacobiScore:
     def set_condition(self, condition):
         self.current_condition = condition
 
-    def _node_positional_encoding(self, batch_size, num_nodes, device, dtype):
-        dim = self.positional_encoding_dim
-        if dim <= 0:
-            return torch.zeros(batch_size, num_nodes, 0, device=device, dtype=dtype)
-
-        positions = torch.arange(num_nodes, device=device, dtype=dtype).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, dim, 2, device=device, dtype=dtype) * (-math.log(10000.0) / dim)
-        )
-        pe = torch.zeros(num_nodes, dim, device=device, dtype=dtype)
-        pe[:, 0::2] = torch.sin(positions * div_term)
-        if dim > 1:
-            pe[:, 1::2] = torch.cos(positions * div_term[: pe[:, 1::2].shape[1]])
-        return pe.unsqueeze(0).expand(batch_size, -1, -1)
-
     def _append_positional_encoding(self, X, flags):
         if not self.positional_encoding:
             return X
-        pe = self._node_positional_encoding(X.size(0), X.size(1), X.device, X.dtype)
+        pe = node_positional_encoding(X.size(0), X.size(1), self.positional_encoding_dim, X.device, X.dtype)
         pe = pe * flags.to(dtype=X.dtype).unsqueeze(-1)
         return torch.cat([X, pe], dim=-1)
 

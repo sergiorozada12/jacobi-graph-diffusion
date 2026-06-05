@@ -1,5 +1,4 @@
 import copy
-import math
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,7 +13,7 @@ from src.features.extra_features import ExtraFeatures
 from src.models.transformer_model import GraphTransformer
 from src.sample.sampler import Sampler
 from src.sde.sde import JacobiSDE
-from src.utils import adjs_to_graphs, build_time_schedule
+from src.utils import adjs_to_graphs, build_time_schedule, node_positional_encoding
 from src.visualization.plots import close_figure, plot_edge_weight_histograms, save_conditional_adjacency_analysis
 
 
@@ -183,25 +182,10 @@ class DiffusionBaseModule(pl.LightningModule):
         complement = (1.0 - adj).unsqueeze(-1)
         return torch.cat([complement, adj.unsqueeze(-1)], dim=-1)
 
-    def _node_positional_encoding(self, batch_size: int, num_nodes: int, device, dtype) -> torch.Tensor:
-        dim = self.positional_encoding_dim
-        if dim <= 0:
-            return torch.zeros(batch_size, num_nodes, 0, device=device, dtype=dtype)
-
-        positions = torch.arange(num_nodes, device=device, dtype=dtype).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, dim, 2, device=device, dtype=dtype) * (-math.log(10000.0) / dim)
-        )
-        pe = torch.zeros(num_nodes, dim, device=device, dtype=dtype)
-        pe[:, 0::2] = torch.sin(positions * div_term)
-        if dim > 1:
-            pe[:, 1::2] = torch.cos(positions * div_term[: pe[:, 1::2].shape[1]])
-        return pe.unsqueeze(0).expand(batch_size, -1, -1)
-
     def _append_positional_encoding(self, X: torch.Tensor, flags: torch.Tensor) -> torch.Tensor:
         if not self.use_positional_encoding:
             return X
-        pe = self._node_positional_encoding(X.size(0), X.size(1), X.device, X.dtype)
+        pe = node_positional_encoding(X.size(0), X.size(1), self.positional_encoding_dim, X.device, X.dtype)
         pe = pe * flags.to(dtype=X.dtype).unsqueeze(-1)
         return torch.cat([X, pe], dim=-1)
 
@@ -335,14 +319,6 @@ class DiffusionBaseModule(pl.LightningModule):
             matrix_size=self.cfg.data.max_node_num,
         )
 
-        if wandb.run:
-            wandb.log(
-                {
-                    "val/conditional_masked_mse": metrics["mse"].item(),
-                    "val/conditional_masked_mae": metrics["mae"].item(),
-                },
-                commit=False,
-            )
 
     def _val_sampler(self):
         eval_model = self._get_eval_model()

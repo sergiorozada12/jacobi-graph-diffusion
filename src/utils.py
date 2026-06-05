@@ -50,6 +50,21 @@ def build_time_schedule(N, T, eps, kind="log", power=2.0):
     return ts.to(dtype=torch.float32)
 
 
+def node_positional_encoding(batch_size, num_nodes, dim, device, dtype):
+    if dim <= 0:
+        return torch.zeros(batch_size, num_nodes, 0, device=device, dtype=dtype)
+
+    positions = torch.arange(num_nodes, device=device, dtype=dtype).unsqueeze(1)
+    div_term = torch.exp(
+        torch.arange(0, dim, 2, device=device, dtype=dtype) * (-math.log(10000.0) / dim)
+    )
+    pe = torch.zeros(num_nodes, dim, device=device, dtype=dtype)
+    pe[:, 0::2] = torch.sin(positions * div_term)
+    if dim > 1:
+        pe[:, 1::2] = torch.cos(positions * div_term[: pe[:, 1::2].shape[1]])
+    return pe.unsqueeze(0).expand(batch_size, -1, -1)
+
+
 def node_flags(adjs, observed_mask=None, eps=1e-5):
     """
     Compute binary flags for active nodes.

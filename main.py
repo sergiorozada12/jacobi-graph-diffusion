@@ -4,7 +4,6 @@ import statistics
 import json
 import torch
 import pytorch_lightning as pl
-import wandb
 from pathlib import Path
 from omegaconf import OmegaConf
 import numpy as np
@@ -770,15 +769,6 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             print_header("Conditional wireless test")
             print_row("conditional_test_masked_mse", cond_test_metrics["mse"])
             print_row("conditional_test_masked_mae", cond_test_metrics["mae"])
-            if wandb.run:
-                wandb.log(
-                    {
-                        "test/conditional_masked_mse": cond_test_metrics["mse"],
-                        "test/conditional_masked_mae": cond_test_metrics["mae"],
-                    }
-                )
-                wandb.run.summary["test/conditional_masked_mse"] = cond_test_metrics["mse"]
-                wandb.run.summary["test/conditional_masked_mae"] = cond_test_metrics["mae"]
 
         try:
             ref_graphs_raw = []
