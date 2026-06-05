@@ -1,4 +1,5 @@
 import copy
+import math
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,8 +14,8 @@ from src.features.extra_features import ExtraFeatures
 from src.models.transformer_model import GraphTransformer
 from src.sample.sampler import Sampler
 from src.sde.sde import JacobiSDE
-from src.utils import build_time_schedule
-from src.visualization.plots import close_figure, plot_edge_weight_histograms
+from src.utils import adjs_to_graphs, build_time_schedule
+from src.visualization.plots import close_figure, plot_edge_weight_histograms, save_conditional_adjacency_analysis
 
 
 class DiffusionBaseModule(pl.LightningModule):
@@ -39,6 +40,11 @@ class DiffusionBaseModule(pl.LightningModule):
         self._ran_sampling_metrics = False
 
         self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
+        self.conditional = bool(getattr(cfg.model, "conditional", False))
+        self.condition_dim = int(getattr(cfg.model, "condition_dim", 3))
+        self.condition_dropout_prob = float(getattr(cfg.train, "condition_dropout_prob", 0.0))
+        self.use_positional_encoding = bool(getattr(cfg.model, "positional_encoding", False))
+        self.positional_encoding_dim = int(getattr(cfg.model, "positional_encoding_dim", 0))
         self.use_ema = getattr(cfg.train, "use_ema", False)
         self.ema_decay = getattr(cfg.train, "ema_decay", 0.999)
         self._cached_ref_graphs: Optional[List] = None
@@ -177,27 +183,83 @@ class DiffusionBaseModule(pl.LightningModule):
         complement = (1.0 - adj).unsqueeze(-1)
         return torch.cat([complement, adj.unsqueeze(-1)], dim=-1)
 
+    def _node_positional_encoding(self, batch_size: int, num_nodes: int, device, dtype) -> torch.Tensor:
+        dim = self.positional_encoding_dim
+        if dim <= 0:
+            return torch.zeros(batch_size, num_nodes, 0, device=device, dtype=dtype)
+
+        positions = torch.arange(num_nodes, device=device, dtype=dtype).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, dim, 2, device=device, dtype=dtype) * (-math.log(10000.0) / dim)
+        )
+        pe = torch.zeros(num_nodes, dim, device=device, dtype=dtype)
+        pe[:, 0::2] = torch.sin(positions * div_term)
+        if dim > 1:
+            pe[:, 1::2] = torch.cos(positions * div_term[: pe[:, 1::2].shape[1]])
+        return pe.unsqueeze(0).expand(batch_size, -1, -1)
+
+    def _append_positional_encoding(self, X: torch.Tensor, flags: torch.Tensor) -> torch.Tensor:
+        if not self.use_positional_encoding:
+            return X
+        pe = self._node_positional_encoding(X.size(0), X.size(1), X.device, X.dtype)
+        pe = pe * flags.to(dtype=X.dtype).unsqueeze(-1)
+        return torch.cat([X, pe], dim=-1)
+
+    def _model_inputs(self, extra_pred, flags):
+        X = self._append_positional_encoding(extra_pred.X.float(), flags)
+        return X, extra_pred.E.float()
+
     def _run_model(self, extra_pred, y, flags):
-        return self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+        X, E = self._model_inputs(extra_pred, flags)
+        return self.model(X, E, y, flags)
+
+    def _run_model_with(self, model, extra_pred, y, flags):
+        X, E = self._model_inputs(extra_pred, flags)
+        return model(X, E, y, flags)
+
+    def _append_condition(self, y: torch.Tensor, coords: Optional[torch.Tensor], batch_size: int, *, dropout: bool) -> torch.Tensor:
+        if not self.conditional:
+            return y
+
+        if coords is None:
+            cond = torch.zeros(batch_size, self.condition_dim, device=self.device, dtype=y.dtype)
+        else:
+            coords = coords.to(device=self.device, dtype=y.dtype)
+            present = torch.ones(batch_size, 1, device=self.device, dtype=y.dtype)
+            cond = torch.cat([coords, present], dim=1)
+            if cond.size(1) != self.condition_dim:
+                raise ValueError(f"Expected condition dim {self.condition_dim}, got {cond.size(1)}.")
+
+        if dropout and self.condition_dropout_prob > 0.0:
+            drop = torch.rand(batch_size, device=self.device) < self.condition_dropout_prob
+            cond = cond.clone()
+            cond[drop] = 0.0
+
+        return torch.cat([y, cond], dim=1)
 
     @staticmethod
-    def _extract_batch_tensors(batch) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    def _extract_batch_tensors(batch) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         if isinstance(batch, (list, tuple)):
+            if len(batch) == 4:
+                return batch[0], batch[1], batch[2], batch[3]
             if len(batch) == 3:
-                return batch[0], batch[1], batch[2]
+                return batch[0], batch[1], batch[2], None
             if len(batch) == 2:
-                return batch[0], batch[1], None
+                return batch[0], batch[1], None, None
         raise ValueError(f"Unexpected batch structure: {type(batch)}")
 
     def training_step(self, batch, batch_idx):
-        X, adj, observed_mask = self._extract_batch_tensors(batch)
-        return self._training_step_impl(batch_idx, X, adj, observed_mask)
+        X, adj, observed_mask, coords = self._extract_batch_tensors(batch)
+        return self._training_step_impl(batch_idx, X, adj, observed_mask, coords)
 
     def validation_step(self, batch, batch_idx):
-        X, adj, observed_mask = self._extract_batch_tensors(batch)
-        self._validation_step_impl(X, adj, observed_mask)
+        X, adj, observed_mask, coords = self._extract_batch_tensors(batch)
+        self._validation_step_impl(X, adj, observed_mask, coords)
         if not self._ran_sampling_metrics:
-            self._val_sampler()
+            if self.conditional:
+                self._val_conditional_sampler(adj, observed_mask, coords)
+            else:
+                self._val_sampler()
             self._ran_sampling_metrics = True
         return
 
@@ -205,11 +267,82 @@ class DiffusionBaseModule(pl.LightningModule):
         self._ran_sampling_metrics = False
 
     def on_fit_end(self):
-        ckpt_dir = f"checkpoints/{self.cfg.data.data}"
-        os.makedirs(ckpt_dir, exist_ok=True)
-        torch.save(self.model.state_dict(), f"{ckpt_dir}/weights.pth")
+        name = getattr(self.cfg.general, "name", None)
+        if not name:
+            data_name = self.cfg.data.data
+            if data_name == "metrofi":
+                suffix = "cond" if getattr(self.cfg.model, "conditional", False) else "uncond"
+                name = f"{data_name}-{suffix}"
+            else:
+                name = data_name
+        ckpt_dir = Path("checkpoints") / name
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(self.model.state_dict(), ckpt_dir / "weights.pth")
         if self.use_ema and self.ema_model is not None:
-            torch.save(self.ema_model.state_dict(), f"{ckpt_dir}/weights_ema.pth")
+            torch.save(self.ema_model.state_dict(), ckpt_dir / "weights_ema.pth")
+
+    @staticmethod
+    def _masked_adj_metrics(gen_adj: torch.Tensor, gt_adj: torch.Tensor, observed_mask: torch.Tensor) -> dict:
+        observed_mask = observed_mask.bool()
+        edge_mask = (observed_mask[:, :, None] & observed_mask[:, None, :]).float()
+        diag = torch.eye(edge_mask.size(-1), device=edge_mask.device).unsqueeze(0)
+        edge_mask = edge_mask * (1.0 - diag)
+        denom = edge_mask.flatten(1).sum(dim=1).clamp_min(1.0)
+        diff = gen_adj - gt_adj
+        mse = ((diff.pow(2) * edge_mask).flatten(1).sum(dim=1) / denom).mean()
+        mae = ((diff.abs() * edge_mask).flatten(1).sum(dim=1) / denom).mean()
+        return {"mse": mse, "mae": mae}
+
+    def _val_conditional_sampler(self, adj, observed_mask, coords):
+        if not self.conditional or coords is None or observed_mask is None:
+            return
+        eval_model = self._get_eval_model()
+        old_test_graphs = self.cfg.sampler.test_graphs
+        self.cfg.sampler.test_graphs = adj.size(0)
+        with self._using_sampler_model(eval_model):
+            try:
+                _, _, adj_samples = self.sampler.sample(
+                    keep_isolates=True,
+                    return_adjs=True,
+                    use_node_dist=False,
+                    nodelist=list(range(self.cfg.data.max_node_num)),
+                    keep_zero_weights=True,
+                    condition=coords,
+                    fixed_flags=observed_mask.bool(),
+                )
+            finally:
+                self.cfg.sampler.test_graphs = old_test_graphs
+
+        gen_adj = adj_samples[: adj.size(0)].to(adj.device).float()
+        metrics = self._masked_adj_metrics(gen_adj, adj.float(), observed_mask.to(adj.device))
+
+        name = getattr(self.cfg.general, "name", None) or self.cfg.data.data
+        out_dir = Path(self.cfg.general.save_path) / name / "conditional_val"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with open(out_dir / "metrics.txt", "a") as f:
+            f.write(
+                f"epoch={self.current_epoch} step={self.global_step} "
+                f"mse={metrics['mse'].item():.8f} mae={metrics['mae'].item():.8f} "
+                f"graphs={adj.size(0)}\n"
+            )
+
+        sample_dir = out_dir / f"epoch_{self.current_epoch:04d}_step_{self.global_step}"
+        save_conditional_adjacency_analysis(
+            adj.detach().cpu(),
+            gen_adj.detach().cpu(),
+            observed_mask.detach().cpu(),
+            sample_dir,
+            matrix_size=self.cfg.data.max_node_num,
+        )
+
+        if wandb.run:
+            wandb.log(
+                {
+                    "val/conditional_masked_mse": metrics["mse"].item(),
+                    "val/conditional_masked_mae": metrics["mae"].item(),
+                },
+                commit=False,
+            )
 
     def _val_sampler(self):
         eval_model = self._get_eval_model()
@@ -239,10 +372,10 @@ class DiffusionBaseModule(pl.LightningModule):
    
         self._maybe_log_weight_histograms(samples, adj_samples)
 
-    def _training_step_impl(self, batch_idx, X, adj, observed_mask):
+    def _training_step_impl(self, batch_idx, X, adj, observed_mask, coords=None):
         raise NotImplementedError
 
-    def _validation_step_impl(self, X, adj, observed_mask):
+    def _validation_step_impl(self, X, adj, observed_mask, coords=None):
         raise NotImplementedError
 
     def _load_reference_graphs(self) -> Optional[List]:

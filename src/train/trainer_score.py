@@ -34,7 +34,7 @@ class DiffusionScoreModule(DiffusionBaseModule):
     def _analytic_jacobi_score(self, adj_clean, adj_noisy, t):
         return self._jacobi_helper.jacobi_score(adj_clean, adj_noisy, t).float()
 
-    def _training_step_impl(self, batch_idx, X, adj, observed_mask):
+    def _training_step_impl(self, batch_idx, X, adj, observed_mask, coords=None):
         batch = self._prepare_batch(adj, observed_mask)
         flags = batch["flags"]
         pred = self._run_model(batch["extra_pred"], batch["y"], flags)
@@ -45,7 +45,7 @@ class DiffusionScoreModule(DiffusionBaseModule):
         loss = self.train_loss(pred_score, target_score, mask)
         return {"loss": loss}
 
-    def _validation_step_impl(self, X, adj, observed_mask):
+    def _validation_step_impl(self, X, adj, observed_mask, coords=None):
         batch = self._prepare_batch(adj, observed_mask)
         flags = batch["flags"]
         t = batch["t"]

@@ -57,6 +57,11 @@ class Sampler:
             time_schedule_power=self.cfg.sampler.time_schedule_power,
             use_sampled_features=self.use_sampled_features,
             score_mode=self.score_mode,
+            conditional=getattr(self.cfg.model, "conditional", False),
+            condition_dim=getattr(self.cfg.model, "condition_dim", 3),
+            guidance_scale=getattr(self.cfg.sampler, "guidance_scale", 0.0),
+            positional_encoding=getattr(self.cfg.model, "positional_encoding", False),
+            positional_encoding_dim=getattr(self.cfg.model, "positional_encoding_dim", 0),
         )
 
     def set_model(self, model):
@@ -107,16 +112,28 @@ class Sampler:
         use_node_dist: bool = True,
         nodelist=None,
         keep_zero_weights: bool = False,
+        condition=None,
+        fixed_flags=None,
     ):
-        num_rounds = math.ceil(self.cfg.sampler.test_graphs / self.cfg.data.batch_size)
+        if condition is not None and fixed_flags is not None and condition.size(0) != fixed_flags.size(0):
+            raise ValueError("condition and fixed_flags must contain the same number of graphs.")
+        total_samples = fixed_flags.size(0) if fixed_flags is not None else self.cfg.sampler.test_graphs
+        num_rounds = math.ceil(total_samples / self.cfg.data.batch_size)
         generated = []
         first_adj = None
         first_flags = None
         collected_adjs = []
-        for _ in range(num_rounds):
-        # for _ in range(1):
-            flags = self._make_flags(use_node_dist=use_node_dist)
-            adj, _ = self.solver.solve(flags)
+        for round_idx in range(num_rounds):
+            start = round_idx * self.cfg.data.batch_size
+            end = start + self.cfg.data.batch_size
+            if fixed_flags is not None:
+                flags = fixed_flags[start:end].to(self.device)
+            else:
+                flags = self._make_flags(use_node_dist=use_node_dist)
+            cond_batch = None
+            if condition is not None:
+                cond_batch = condition[start:end].to(self.device)
+            adj, _ = self.solver.solve(flags, condition=cond_batch)
             if self.score_mode == "weighted":
                 samples = adj.clamp(0.0, 1.0)
             else:

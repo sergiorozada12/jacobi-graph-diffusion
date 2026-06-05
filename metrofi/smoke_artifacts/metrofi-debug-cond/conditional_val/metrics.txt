@@ -1,0 +1,1 @@
+epoch=0 step=0 mse=0.14938146 mae=0.30229986 graphs=8

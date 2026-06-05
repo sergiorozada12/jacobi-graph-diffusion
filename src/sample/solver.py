@@ -190,6 +190,11 @@ class PCSolver:
             time_schedule_power=2.0,
             use_sampled_features=True,
             score_mode="graph",
+            conditional=False,
+            condition_dim=3,
+            guidance_scale=0.0,
+            positional_encoding=False,
+            positional_encoding_dim=0,
         ):
         self.sde = sde
         self.shape_adj = shape_adj
@@ -214,6 +219,12 @@ class PCSolver:
             alpha=sde.alpha,
             beta=sde.beta,
             direct_model_score=(score_mode == "direct_score"),
+            weighted_model_output=(score_mode == "weighted"),
+            conditional=conditional,
+            condition_dim=condition_dim,
+            guidance_scale=guidance_scale,
+            positional_encoding=positional_encoding,
+            positional_encoding_dim=positional_encoding_dim,
         )
 
         predictor_type = (predictor_type or "em").lower()
@@ -225,9 +236,11 @@ class PCSolver:
             self.predictor = EulerMaruyamaPredictor(sde, jacobi_score)
         self.corrector = LangevinCorrector(sde, jacobi_score, snr, scale_eps, n_steps, eps_corrector)
 
-    def solve(self, flags):
+    def solve(self, flags, condition=None):
+        self.predictor.score_fn.set_condition(condition)
         with torch.no_grad():
-            adj = self.sde.prior_sampling(self.shape_adj).to(self.device)
+            shape_adj = (flags.size(0), self.shape_adj[1], self.shape_adj[2])
+            adj = self.sde.prior_sampling(shape_adj).to(self.device)
             adj = mask_adjs(adj, flags)
 
             history = []
@@ -241,7 +254,7 @@ class PCSolver:
             ).to(self.device, dtype=adj.dtype)
             for i in trange(0, N, desc="[Sampling]", position=1, leave=False):
                 t, dt  = ts[i], (ts[i+1] - ts[i]).item()
-                vec_t  = torch.full((self.shape_adj[0],), t, device=self.device, dtype=adj.dtype)
+                vec_t  = torch.full((flags.size(0),), t, device=self.device, dtype=adj.dtype)
 
                 adj, adj_mean = self.predictor.update(adj, flags, vec_t, dt)
                 if self.use_corrector:
@@ -275,4 +288,5 @@ class PCSolver:
         )
         save_figure(heatmap_fig, "tests/history_heatmaps.png", dpi=150)
 
+        self.predictor.score_fn.set_condition(None)
         return ((adj_mean if self.denoise else adj), N * (self.n_steps + 1))

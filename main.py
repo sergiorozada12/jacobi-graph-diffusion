@@ -4,6 +4,7 @@ import statistics
 import json
 import torch
 import pytorch_lightning as pl
+import wandb
 from pathlib import Path
 from omegaconf import OmegaConf
 import numpy as np
@@ -41,6 +42,17 @@ def print_row(label, val, ref=None):
         else:
             print(f"  ▸ {label:<35} | {val}")
 
+
+def experiment_name(cfg):
+    name = getattr(cfg.general, "name", None)
+    if name:
+        return name
+    data_name = cfg.data.data
+    if data_name == "metrofi":
+        suffix = "cond" if getattr(cfg.model, "conditional", False) else "uncond"
+        return f"{data_name}-{suffix}"
+    return data_name
+
 # Core components and utilities loader
 def load_model_components(model_name):
     if model_name == "pa":
@@ -73,14 +85,38 @@ def load_model_components(model_name):
         from src.metrics.val import PlanarSamplingMetrics as MetricsClass
         from src.dataset.spectre import SpectreDatasetModule as DatasetClass
         wandb_name = "planar"
-    elif model_name == "metrofi":
+    elif model_name in {"metrofi", "metrofi_uncond"}:
         from configs.config_metrofi import MainConfig
         from src.metrics.val import WirelessSamplingMetrics as MetricsClass
         from src.dataset.wireless import WirelessDatasetModule as DatasetClass
-        wandb_name = "metrofi"
+        wandb_name = "metrofi-uncond"
+    elif model_name == "metrofi_cond":
+        from configs.config_metrofi_cond import MainConfig
+        from src.metrics.val import WirelessSamplingMetrics as MetricsClass
+        from src.dataset.wireless import WirelessDatasetModule as DatasetClass
+        wandb_name = "metrofi-cond"
+    elif model_name == "metrofi_debug":
+        from configs.config_metrofi_debug import MainConfig
+        from src.metrics.val import WirelessSamplingMetrics as MetricsClass
+        from src.dataset.wireless import WirelessDatasetModule as DatasetClass
+        wandb_name = "metrofi-debug"
     else:
         raise ValueError(f"Unknown model name: {model_name}")
     return MainConfig, MetricsClass, DatasetClass, wandb_name
+
+def apply_metrofi_conditional_config(cfg, model_name):
+    if model_name not in {"metrofi", "metrofi_uncond", "metrofi_cond", "metrofi_debug"}:
+        return
+
+    if not getattr(cfg.model, "conditional", False):
+        cfg.model.positional_encoding = False
+        return
+
+    cfg.model.positional_encoding = True
+    input_dims = dict(cfg.model.input_dims)
+    input_dims["y"] = int(input_dims["y"]) + int(cfg.model.condition_dim)
+    input_dims["X"] = int(input_dims["X"]) + int(cfg.model.positional_encoding_dim)
+    cfg.model.input_dims = input_dims
 
 # Helper functions for generation and evaluation
 def _validate_expected_num_graphs(samples, expected_num_graphs):
@@ -201,7 +237,7 @@ def run_train(args, cfg, wandb_name, MetricsClass, DatasetClass):
         node_dist=node_dist,
     )
 
-    ckpt_dir = Path(f"checkpoints/{cfg.data.data}")
+    ckpt_dir = Path("checkpoints") / experiment_name(cfg)
     ckpt_path = ckpt_dir / "last.ckpt"
 
     callbacks = []
@@ -239,7 +275,7 @@ def run_train(args, cfg, wandb_name, MetricsClass, DatasetClass):
         trainer.fit(model, datamodule=datamodule)
 
 def run_gen(args, cfg, MetricsClass, DatasetClass, model_name):
-    if model_name == "metrofi":
+    if model_name.startswith("metrofi"):
         run_gen_wireless(args, cfg, MetricsClass, DatasetClass)
     else:
         run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name)
@@ -310,7 +346,7 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             if not weight_path.exists():
                 raise FileNotFoundError(f"Provided checkpoint does not exist: {weight_path}")
         else:
-            ckpt_dir = Path("checkpoints") / cfg.data.data
+            ckpt_dir = Path("checkpoints") / experiment_name(cfg)
             ema_path = ckpt_dir / "weights_ema.pth"
             weights_path = ckpt_dir / "weights.pth"
             if (not args.no_ema) and cfg.train.use_ema and ema_path.exists():
@@ -515,6 +551,76 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             json.dump(data, f, indent=4)
         log_success(f"Results saved to {out_path}")
 
+def _run_wireless_conditional_eval(cfg, datamodule, sampler, split="test"):
+    if not getattr(cfg.model, "conditional", False):
+        return None
+
+    dataset = getattr(datamodule, f"{split}_ds")
+    if not hasattr(dataset, "tensors") or len(dataset.tensors) < 4:
+        log_warning(f"Skipping conditional {split} eval: dataset has no coordinates.")
+        return None
+
+    n_metric = min(int(cfg.sampler.conditional_eval_graphs), len(dataset))
+    if n_metric <= 0:
+        log_warning(f"Skipping conditional {split} eval: no graphs selected.")
+        return None
+    seed = int(getattr(cfg.sampler, "conditional_eval_seed", cfg.general.seed))
+    rng = np.random.default_rng(seed)
+    indices = rng.choice(len(dataset), size=n_metric, replace=False)
+
+    tensors = dataset.tensors
+    gt_adj = tensors[1][indices].to(cfg.general.device).float()
+    observed_mask = tensors[2][indices].to(cfg.general.device).bool()
+    coords = tensors[3][indices].to(cfg.general.device).float()
+
+    old_test_graphs = cfg.sampler.test_graphs
+    cfg.sampler.test_graphs = n_metric
+    try:
+        _, _, adj_samples = sampler.sample(
+            keep_isolates=True,
+            return_adjs=True,
+            use_node_dist=False,
+            nodelist=list(range(cfg.data.max_node_num)),
+            keep_zero_weights=True,
+            condition=coords,
+            fixed_flags=observed_mask,
+        )
+    finally:
+        cfg.sampler.test_graphs = old_test_graphs
+
+    gen_adj = adj_samples[:n_metric].to(gt_adj.device).float()
+    gt_adj = gt_adj[:n_metric]
+    observed_mask = observed_mask[:n_metric]
+    edge_mask = (observed_mask[:, :, None] & observed_mask[:, None, :]).float()
+    diag = torch.eye(edge_mask.size(-1), device=edge_mask.device).unsqueeze(0)
+    edge_mask = edge_mask * (1.0 - diag)
+    denom = edge_mask.flatten(1).sum(dim=1).clamp_min(1.0)
+    diff = gen_adj - gt_adj
+    mse = ((diff.pow(2) * edge_mask).flatten(1).sum(dim=1) / denom).mean()
+    mae = ((diff.abs() * edge_mask).flatten(1).sum(dim=1) / denom).mean()
+    metrics = {"mse": float(mse.detach().cpu()), "mae": float(mae.detach().cpu())}
+
+    from src.visualization.plots import save_conditional_adjacency_analysis
+
+    out_dir = Path(cfg.general.save_path) / experiment_name(cfg) / f"conditional_{split}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "metrics.txt", "a") as f:
+        f.write(
+            f"split={split} seed={seed} graphs={n_metric} "
+            f"mse={metrics['mse']:.8f} mae={metrics['mae']:.8f}\n"
+        )
+
+    sample_dir = out_dir / "samples"
+    save_conditional_adjacency_analysis(
+        gt_adj.detach().cpu(),
+        gen_adj.detach().cpu(),
+        observed_mask.detach().cpu(),
+        sample_dir,
+        matrix_size=cfg.data.max_node_num,
+    )
+
+    return metrics
+
 def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
     from src.models.transformer_model import GraphTransformer
     from src.sample.sampler import Sampler
@@ -553,7 +659,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
     interference_max = float(interference_min if interference_max is None else interference_max)
     interference_scale = max(0.0, interference_max - interference_min)
 
-    ckpt_dir = Path("checkpoints") / cfg.data.data
+    ckpt_dir = Path("checkpoints") / experiment_name(cfg)
     if args.checkpoint:
         checkpoint_path = Path(args.checkpoint)
     else:
@@ -658,6 +764,21 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             print_header("Ratios vs reference")
             for k, v in sorted(ratios.items()):
                 print_row(k, v)
+
+        cond_test_metrics = _run_wireless_conditional_eval(cfg, datamodule, sampler, split="test")
+        if cond_test_metrics is not None:
+            print_header("Conditional wireless test")
+            print_row("conditional_test_masked_mse", cond_test_metrics["mse"])
+            print_row("conditional_test_masked_mae", cond_test_metrics["mae"])
+            if wandb.run:
+                wandb.log(
+                    {
+                        "test/conditional_masked_mse": cond_test_metrics["mse"],
+                        "test/conditional_masked_mae": cond_test_metrics["mae"],
+                    }
+                )
+                wandb.run.summary["test/conditional_masked_mse"] = cond_test_metrics["mse"]
+                wandb.run.summary["test/conditional_masked_mae"] = cond_test_metrics["mae"]
 
         try:
             ref_graphs_raw = []
@@ -773,7 +894,7 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["pa", "sbm", "sbm_2comms", "tree", "tree_graphon", "planar", "metrofi"],
+        choices=["pa", "sbm", "sbm_2comms", "tree", "tree_graphon", "planar", "metrofi", "metrofi_uncond", "metrofi_cond", "metrofi_debug"],
         help="Specific diffusion model/config type to use."
     )
     parent_parser.add_argument("--seed", type=int, default=None, help="Override default config seed.")
@@ -822,6 +943,8 @@ def main():
         cfg.general.device = args.device
     if args.mode == "gen" and args.num_samples is not None:
         cfg.sampler.test_graphs = args.num_samples
+
+    apply_metrofi_conditional_config(cfg, args.model)
 
     # Global seeding
     _ = pl.seed_everything(cfg.general.seed, workers=True)

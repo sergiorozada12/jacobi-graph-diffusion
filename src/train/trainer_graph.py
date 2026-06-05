@@ -19,14 +19,14 @@ class DiffusionGraphModule(DiffusionBaseModule):
             train_loss=train_loss,
         )
 
-    def _training_step_impl(self, batch_idx, X, adj, observed_mask):
+    def _training_step_impl(self, batch_idx, X, adj, observed_mask, coords=None):
         batch = self._prepare_batch(adj, observed_mask)
         flags = batch["flags"]
         pred = self._run_model(batch["extra_pred"], batch["y"], flags)
         loss = self.train_loss(masked_pred_E=pred.E, true_E=batch["edge_true"])
         return {"loss": loss}
 
-    def _validation_step_impl(self, X, adj, observed_mask):
+    def _validation_step_impl(self, X, adj, observed_mask, coords=None):
         batch = self._prepare_batch(adj, observed_mask)
         flags = batch["flags"]
         t = batch["t"]
@@ -150,18 +150,18 @@ class DiffusionWeightedGraphModule(DiffusionBaseModule):
             output_dims_override={"E": 1},
         )
 
-    def _training_step_impl(self, batch_idx, X, adj, observed_mask):
-        batch = self._prepare_batch(adj, observed_mask)
+    def _training_step_impl(self, batch_idx, X, adj, observed_mask, coords=None):
+        batch = self._prepare_batch(adj, observed_mask, coords, dropout_condition=True)
         flags = batch["flags"]
         pred = self._run_model(batch["extra_pred"], batch["y"], flags)
         pred_edges = pred.E[..., 0]
         target_edges = adj.float()
         mask = self._edge_mask(flags)
-        loss = self.train_loss(pred_edges, target_edges)
+        loss = self.train_loss(pred_edges, target_edges, mask)
         return {"loss": loss}
 
-    def _validation_step_impl(self, X, adj, observed_mask):
-        batch = self._prepare_batch(adj, observed_mask)
+    def _validation_step_impl(self, X, adj, observed_mask, coords=None):
+        batch = self._prepare_batch(adj, observed_mask, coords)
         flags = batch["flags"]
         t = batch["t"]
 
@@ -169,8 +169,13 @@ class DiffusionWeightedGraphModule(DiffusionBaseModule):
             model = self._get_eval_model()
             features_input = batch["features_input"]
             extra_pred = self.feature_extractor(features_input, flags)
-            y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
-            pred = model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+            y = self._append_condition(
+                torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float(),
+                coords,
+                adj.size(0),
+                dropout=False,
+            )
+            pred = self._run_model_with(model, extra_pred, y, flags)
             adj_pred = pred.E[..., 0].float()
 
             mask = self._edge_mask(flags)
@@ -191,7 +196,7 @@ class DiffusionWeightedGraphModule(DiffusionBaseModule):
             wandb.log({"val/denoiser": wandb.Image(fig)})
         close_figure(fig)
 
-    def _prepare_batch(self, adj: torch.Tensor, observed_mask):
+    def _prepare_batch(self, adj: torch.Tensor, observed_mask, coords=None, dropout_condition: bool = False):
         flags = node_flags(adj, observed_mask)
         batch_size = adj.size(0)
         t = self._sample_time(batch_size)
@@ -203,7 +208,12 @@ class DiffusionWeightedGraphModule(DiffusionBaseModule):
 
         features_input = edge_t_sample if self.use_sampled_features else edge_t
         extra_pred = self.feature_extractor(features_input, flags)
-        y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
+        y = self._append_condition(
+            torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float(),
+            coords,
+            batch_size,
+            dropout=dropout_condition,
+        )
 
         return {
             "flags": flags,

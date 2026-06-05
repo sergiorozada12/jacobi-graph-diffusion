@@ -1,3 +1,5 @@
+import math
+
 import torch
 import numpy as np
 
@@ -20,6 +22,12 @@ class JacobiScore:
             alpha=1.0,
             beta=1.0,
             direct_model_score=False,
+            weighted_model_output=False,
+            conditional=False,
+            condition_dim=3,
+            guidance_scale=0.0,
+            positional_encoding=False,
+            positional_encoding_dim=0,
         ):
         self.order = order
         self.eps = eps_score
@@ -38,6 +46,13 @@ class JacobiScore:
         self.decay_cutoff = 1e-12
         self.use_sampled_features = use_sampled_features
         self.direct_model_score = direct_model_score
+        self.weighted_model_output = weighted_model_output
+        self.conditional = bool(conditional)
+        self.condition_dim = int(condition_dim)
+        self.guidance_scale = float(guidance_scale)
+        self.positional_encoding = bool(positional_encoding)
+        self.positional_encoding_dim = int(positional_encoding_dim)
+        self.current_condition = None
         if self.model is not None:
             self.model.eval()
         self.alpha = float(alpha)
@@ -158,7 +173,58 @@ class JacobiScore:
         score = grad_xt / density.clamp_min(self.eps)
         return score.to(orig_dtype)
 
+    def set_condition(self, condition):
+        self.current_condition = condition
+
+    def _node_positional_encoding(self, batch_size, num_nodes, device, dtype):
+        dim = self.positional_encoding_dim
+        if dim <= 0:
+            return torch.zeros(batch_size, num_nodes, 0, device=device, dtype=dtype)
+
+        positions = torch.arange(num_nodes, device=device, dtype=dtype).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, dim, 2, device=device, dtype=dtype) * (-math.log(10000.0) / dim)
+        )
+        pe = torch.zeros(num_nodes, dim, device=device, dtype=dtype)
+        pe[:, 0::2] = torch.sin(positions * div_term)
+        if dim > 1:
+            pe[:, 1::2] = torch.cos(positions * div_term[: pe[:, 1::2].shape[1]])
+        return pe.unsqueeze(0).expand(batch_size, -1, -1)
+
+    def _append_positional_encoding(self, X, flags):
+        if not self.positional_encoding:
+            return X
+        pe = self._node_positional_encoding(X.size(0), X.size(1), X.device, X.dtype)
+        pe = pe * flags.to(dtype=X.dtype).unsqueeze(-1)
+        return torch.cat([X, pe], dim=-1)
+
+    def _append_condition(self, y, condition, batch_size):
+        if not self.conditional:
+            return y
+
+        if condition is None:
+            cond = torch.zeros(batch_size, self.condition_dim, device=y.device, dtype=y.dtype)
+        else:
+            cond = condition.to(device=y.device, dtype=y.dtype)
+            if cond.size(1) == 2:
+                present = torch.ones(batch_size, 1, device=y.device, dtype=y.dtype)
+                cond = torch.cat([cond, present], dim=1)
+        if cond.size(1) != self.condition_dim:
+            raise ValueError(f"Expected condition dim {self.condition_dim}, got {cond.size(1)}.")
+        return torch.cat([y, cond], dim=1)
+
     def compute_score(self, A_t_dist, flags, t):
+        condition = self.current_condition
+        if self.conditional and condition is not None and self.guidance_scale != 0.0:
+            score_cond = self._compute_score_once(A_t_dist, flags, t, condition)
+            null_cond = torch.zeros(
+                condition.size(0), self.condition_dim, device=condition.device, dtype=condition.dtype
+            )
+            score_uncond = self._compute_score_once(A_t_dist, flags, t, null_cond)
+            return score_uncond + self.guidance_scale * (score_cond - score_uncond)
+        return self._compute_score_once(A_t_dist, flags, t, condition)
+
+    def _compute_score_once(self, A_t_dist, flags, t, condition):
         assert_symmetric_and_masked(A_t_dist, flags)
         flags_mask = (flags[:, :, None] * flags[:, None, :]).float()
         A_t_dist = A_t_dist * flags_mask
@@ -177,9 +243,11 @@ class JacobiScore:
         E_t_sample = torch.cat([(1 - A_t_sample).unsqueeze(-1), A_t_sample.unsqueeze(-1)], dim=-1).float()
         feature_input = E_t_sample if self.use_sampled_features else E_t
         extra_pred = self.feature_extractor(feature_input, flags)
+        X = self._append_positional_encoding(extra_pred.X.float(), flags)
         y = torch.cat((extra_pred.y.float(), t.unsqueeze(1)), dim=1).float()
+        y = self._append_condition(y, condition, A_t_dist.size(0))
 
-        pred = self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+        pred = self.model(X, extra_pred.E.float(), y, flags)
 
         if self.direct_model_score:
             score_raw = pred.E[..., 0]
@@ -188,7 +256,10 @@ class JacobiScore:
             return score * flags_mask
 
         assert_symmetric_and_masked_E(pred.E, flags)
-        A_0_dist = F.softmax(pred.E, dim=-1)[..., 1:].sum(dim=-1).float()
+        if self.weighted_model_output:
+            A_0_dist = pred.E[..., 0].float().clamp(0.0, 1.0)
+        else:
+            A_0_dist = F.softmax(pred.E, dim=-1)[..., 1:].sum(dim=-1).float()
         A_0_dist = A_0_dist * flags_mask
 
         if self.sample_target == "bernoulli":
