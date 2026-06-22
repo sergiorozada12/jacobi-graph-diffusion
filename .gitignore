@@ -15,6 +15,12 @@ nohup*
 sweep*
 results*
 
+# MetroFi experiment scratch / generated eval artifacts (keep README.md and *.py tools)
+metrofi/debug/
+metrofi/first_run/
+metrofi/smoke_saved_eval/
+metrofi/smoke_artifacts/
+
 # C extensions
 *.so
 

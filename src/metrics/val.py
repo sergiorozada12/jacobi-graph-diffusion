@@ -40,7 +40,111 @@ import wandb
 from src.metrics.abstract import compute_ratios
 
 PRINT_TIME = False
+
+
+def pooled_edge_weight_distribution_metrics(reference_values, generated_values, bins=50, value_range=(0.0, 1.0)) -> Dict[str, float]:
+    ref = np.asarray(reference_values, dtype=float).reshape(-1)
+    gen = np.asarray(generated_values, dtype=float).reshape(-1)
+    ref = ref[np.isfinite(ref)]
+    gen = gen[np.isfinite(gen)]
+
+    if ref.size == 0 or gen.size == 0:
+        return {
+            "edge_weight_pooled_wasserstein": 0.0,
+            "edge_weight_pooled_hist_tvd": 0.0,
+            "edge_weight_pooled_hist_js": 0.0,
+        }
+
+    ref_hist, _ = np.histogram(ref, bins=bins, range=value_range)
+    gen_hist, _ = np.histogram(gen, bins=bins, range=value_range)
+    ref_p = ref_hist.astype(float) / (ref_hist.sum() + 1e-12)
+    gen_p = gen_hist.astype(float) / (gen_hist.sum() + 1e-12)
+
+    tvd = 0.5 * np.abs(ref_p - gen_p).sum()
+    mix = 0.5 * (ref_p + gen_p)
+    ref_nonzero = ref_p > 0
+    gen_nonzero = gen_p > 0
+    ref_kl = np.sum(ref_p[ref_nonzero] * np.log(ref_p[ref_nonzero] / np.maximum(mix[ref_nonzero], 1e-12)))
+    gen_kl = np.sum(gen_p[gen_nonzero] * np.log(gen_p[gen_nonzero] / np.maximum(mix[gen_nonzero], 1e-12)))
+    js = 0.5 * (ref_kl + gen_kl)
+
+    return {
+        "edge_weight_pooled_wasserstein": float(wasserstein_distance(ref, gen)),
+        "edge_weight_pooled_hist_tvd": float(tvd),
+        "edge_weight_pooled_hist_js": float(js),
+    }
+
+
+def pairwise_edge_weight_distribution_metrics(reference_values_by_pair, generated_values_by_pair, bins=50, value_range=(0.0, 1.0)) -> Dict[str, float]:
+    scores = {
+        "edge_weight_pairavg_ks": [],
+        "edge_weight_pairavg_wasserstein": [],
+        "edge_weight_pairavg_hist_tvd": [],
+        "edge_weight_pairavg_hist_js": [],
+    }
+
+    for key in set(reference_values_by_pair.keys()).union(generated_values_by_pair.keys()):
+        ref = np.asarray(reference_values_by_pair.get(key, []), dtype=float).reshape(-1)
+        gen = np.asarray(generated_values_by_pair.get(key, []), dtype=float).reshape(-1)
+        ref = ref[np.isfinite(ref)]
+        gen = gen[np.isfinite(gen)]
+        if ref.size == 0 or gen.size == 0:
+            continue
+
+        pooled = pooled_edge_weight_distribution_metrics(ref, gen, bins=bins, value_range=value_range)
+        scores["edge_weight_pairavg_ks"].append(float(ks_2samp(ref, gen).statistic))
+        scores["edge_weight_pairavg_wasserstein"].append(pooled["edge_weight_pooled_wasserstein"])
+        scores["edge_weight_pairavg_hist_tvd"].append(pooled["edge_weight_pooled_hist_tvd"])
+        scores["edge_weight_pairavg_hist_js"].append(pooled["edge_weight_pooled_hist_js"])
+
+    result = {"edge_weight_pairavg_count": len(scores["edge_weight_pairavg_wasserstein"])}
+    for key, values in scores.items():
+        result[key] = float(np.mean(values)) if values else 0.0
+    return result
+
+
+def masked_adjacency_weight_metrics(gt_adj, gen_adj, observed_mask, bins=50):
+    gt_adj = gt_adj.float().cpu()
+    gen_adj = gen_adj.float().cpu()
+    observed_mask = observed_mask.bool().cpu()
+
+    edge_mask = observed_mask[:, :, None] & observed_mask[:, None, :]
+    n = edge_mask.size(-1)
+    diag = torch.eye(n, dtype=torch.bool).unsqueeze(0)
+    full_mask = (edge_mask & ~diag).float()
+
+    denom = full_mask.flatten(1).sum(dim=1).clamp_min(1.0)
+    diff = gen_adj - gt_adj
+    mse = ((diff.pow(2) * full_mask).flatten(1).sum(dim=1) / denom).mean()
+    mae = ((diff.abs() * full_mask).flatten(1).sum(dim=1) / denom).mean()
+
+    upper = torch.triu(torch.ones((n, n), dtype=torch.bool), diagonal=1).unsqueeze(0)
+    valid_edges = edge_mask & upper
+    gt_values = gt_adj[valid_edges].numpy()
+    gen_values = gen_adj[valid_edges].numpy()
+
+    gt_values_by_pair = {}
+    gen_values_by_pair = {}
+    for u, v in valid_edges.any(dim=0).nonzero(as_tuple=False).tolist():
+        pair_mask = valid_edges[:, u, v]
+        pair = (int(u), int(v))
+        gt_values_by_pair[pair] = gt_adj[pair_mask, u, v].numpy()
+        gen_values_by_pair[pair] = gen_adj[pair_mask, u, v].numpy()
+
+    metrics = {
+        "mse": float(mse),
+        "mae": float(mae),
+        "edge_weight_pooled_count": int(gt_values.shape[0]),
+    }
+    metrics.update(pooled_edge_weight_distribution_metrics(gt_values, gen_values, bins=bins))
+    metrics.update(pairwise_edge_weight_distribution_metrics(gt_values_by_pair, gen_values_by_pair, bins=bins))
+    return metrics, gt_values, gen_values
+
+
 __all__ = [
+    "pooled_edge_weight_distribution_metrics",
+    "pairwise_edge_weight_distribution_metrics",
+    "masked_adjacency_weight_metrics",
     "degree_stats",
     "clustering_stats",
     "orbit_stats_all",
@@ -1554,6 +1658,8 @@ class WirelessSamplingMetrics:
             )
 
         edge_metrics = self._edge_distribution_metrics(reference_graphs, generated_graphs)
+        pooled_edge_metrics = self._pooled_edge_weight_metrics(reference_graphs, generated_graphs)
+        pairavg_edge_metrics = self._pairavg_edge_weight_metrics(reference_graphs, generated_graphs)
 
         if sampled_generated is None:
             sampled_generated = self._sample_subgraphs(generated_graphs, len(reference_graphs))
@@ -1572,6 +1678,14 @@ class WirelessSamplingMetrics:
             "edge_ks": edge_metrics["edge_ks_mean"],
             "edge_wasserstein": edge_metrics["edge_wasserstein_mean"],
             "edge_pairs_used": edge_metrics["edge_pairs_used"],
+            "edge_weight_pooled_wasserstein": pooled_edge_metrics["edge_weight_pooled_wasserstein"],
+            "edge_weight_pooled_hist_tvd": pooled_edge_metrics["edge_weight_pooled_hist_tvd"],
+            "edge_weight_pooled_hist_js": pooled_edge_metrics["edge_weight_pooled_hist_js"],
+            "edge_weight_pairavg_count": pairavg_edge_metrics["edge_weight_pairavg_count"],
+            "edge_weight_pairavg_ks": pairavg_edge_metrics["edge_weight_pairavg_ks"],
+            "edge_weight_pairavg_wasserstein": pairavg_edge_metrics["edge_weight_pairavg_wasserstein"],
+            "edge_weight_pairavg_hist_tvd": pairavg_edge_metrics["edge_weight_pairavg_hist_tvd"],
+            "edge_weight_pairavg_hist_js": pairavg_edge_metrics["edge_weight_pairavg_hist_js"],
             "degree_weighted": weighted_degree,
             "spectre": spectre,
         }
@@ -1596,19 +1710,45 @@ class WirelessSamplingMetrics:
             networkx_graphs.extend(G)
         return networkx_graphs
 
-    def _collect_edge_values(self, graphs: List[nx.Graph]) -> Dict[tuple, List[float]]:
+    # Raw physical interference scale (range-free KS/Wasserstein across sets) vs.
+    # normalized [0, 1] weight scale (histogram-based distribution metrics).
+    _RAW_EDGE_ATTRS = ("interference_raw", "weight")
+    _NORM_EDGE_ATTRS = ("weight_norm", "weight", "interference")
+
+    @staticmethod
+    def _edge_attr(data, attr_priority) -> float:
+        for attr in attr_priority:
+            if attr in data:
+                return float(data[attr])
+        return 0.0
+
+    def _collect_edge_weights_by_pair(self, graphs: List[nx.Graph], attr_priority=_NORM_EDGE_ATTRS) -> Dict[tuple, List[float]]:
         edge_vals: Dict[tuple, List[float]] = {}
         for g in graphs:
             for u, v, data in g.edges(data=True):
-                # Use strict physical parameters for statistical edge comparisons across the sets 
-                val = float(data.get("interference_raw", data.get("weight", 0.0)))
                 key = tuple(sorted((int(u), int(v))))
-                edge_vals.setdefault(key, []).append(val)
+                edge_vals.setdefault(key, []).append(self._edge_attr(data, attr_priority))
         return edge_vals
 
+    def _collect_pooled_edge_weights(self, graphs: List[nx.Graph]) -> List[float]:
+        edge_vals = self._collect_edge_weights_by_pair(graphs)
+        return [val for values in edge_vals.values() for val in values]
+
+    def _pooled_edge_weight_metrics(self, reference_graphs: List[nx.Graph], generated_graphs: List[nx.Graph]) -> Dict[str, float]:
+        return pooled_edge_weight_distribution_metrics(
+            self._collect_pooled_edge_weights(reference_graphs),
+            self._collect_pooled_edge_weights(generated_graphs),
+        )
+
+    def _pairavg_edge_weight_metrics(self, reference_graphs: List[nx.Graph], generated_graphs: List[nx.Graph]) -> Dict[str, float]:
+        return pairwise_edge_weight_distribution_metrics(
+            self._collect_edge_weights_by_pair(reference_graphs),
+            self._collect_edge_weights_by_pair(generated_graphs),
+        )
+
     def _edge_distribution_metrics(self, reference_graphs: List[nx.Graph], generated_graphs: List[nx.Graph]) -> Dict[str, float]:
-        ref_vals = self._collect_edge_values(reference_graphs)
-        gen_vals = self._collect_edge_values(generated_graphs)
+        ref_vals = self._collect_edge_weights_by_pair(reference_graphs, self._RAW_EDGE_ATTRS)
+        gen_vals = self._collect_edge_weights_by_pair(generated_graphs, self._RAW_EDGE_ATTRS)
 
         ks_scores = []
         wass_scores = []

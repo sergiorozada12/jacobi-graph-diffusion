@@ -7,7 +7,7 @@ class GeneralConfig:
     seed: int = 17
     use_wandb: bool = True
     save_path: str = "results/"
-    name: Optional[str] = "metrofi-cond"
+    name: Optional[str] = "metrofi-cond-nosf"
     device: str = "cuda"
     check_val_every_n_epochs: int = 100
     save_checkpoint_every_n_epochs: int = 100
@@ -16,7 +16,7 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = False
-    eps_time: float = 1e-1
+    eps_time: float = 3e-2
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
     snr: float = 0.01
@@ -25,11 +25,11 @@ class SamplerConfig:
     num_nodes: int = 70
     test_graphs: int = 32
     use_corrector: bool = True
-    predictor: str = "em"  # "em" or "milstein"
+    predictor: str = "milstein"  # "em", "heun", or "milstein"
     val_use_full_graph: bool = True
     val_keep_isolates: bool = True
     val_use_fixed_nodelist: bool = True
-    guidance_scale: float = 2.0
+    guidance_scale: float = 1.8
     conditional_eval_graphs: int = 943
     conditional_eval_seed: int = 17
 
@@ -56,7 +56,7 @@ class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = "rrwp"
     rrwp_steps: int = 20
-    use_sampled_features: bool = True
+    use_sampled_features: bool = False
     conditional: bool = True
     condition_dim: int = 3  # normalized lat/lon plus condition-present flag
     positional_encoding: bool = True

@@ -1,302 +1,170 @@
-# MetroFi Wireless Implementation Notes
+# MetroFi Clean Conditional Commands
 
-This repository includes a MetroFi wireless application path under the `metrofi`
-model name. It is implemented as weighted graph generation over a fixed universe
-of wireless access points.
+This file keeps only the commands needed for the clean MetroFi conditional run. The clean setting is different from the first MetroFi conditional checkpoint we trained: the old checkpoint used `use_sampled_features=True`, while the current config uses `use_sampled_features=False`.
 
-## Where The Code Lives
+Why this matters: MetroFi edges are continuous weights in `[0, 1]`, not binary edge indicators. With sampled features enabled, the feature extractor receives a Bernoulli-sampled version of the noisy adjacency, which discards edge magnitude information. For MetroFi, we want both training and sampling to use the continuous weighted adjacency directly.
 
-- CLI entry point: `main.py`
-- MetroFi config: `configs/config_metrofi.py`
-- Dataset loader: `src/dataset/wireless.py`
-- Dataset builder: `src/dataset_generation/gen_metrofi_dataset.py`
-- Weighted training module: `src/train/trainer_graph.py`
-- Shared Lightning training wrapper: `src/train/base_module.py`
-- Sampler and reverse solver: `src/sample/sampler.py`, `src/sample/solver.py`
-- Wireless metrics: `src/metrics/val.py`, class `WirelessSamplingMetrics`
+Current config assumptions:
 
-The code is present, but this checkout does not currently contain the MetroFi
-data directory. The configured dataset path is `data/metrofi/metrofi.pkl`, and
-the dataset generation script expects raw input at
-`data/metrofi/stumble_filtered.txt` by default.
+- model: `metrofi_cond`
+- output folder/checkpoints: `metrofi-cond-nosf`
+- conditional generation: enabled with location coordinates and node positional encoding
+- `use_sampled_features=False` in config
+- generation commands also explicitly pass `--no-model-use-sampled-features`
+- validation sweep uses 128 validation graphs for speed
+- final test uses 943 test graphs
 
-## What The Wireless Setting Means
+The validation sweep commands below use `/mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt`. The recommended test command uses `/mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch999.ckpt` with the best validation setting.
 
-The MetroFi path treats each location as one graph.
+## 1. Training
 
-- Nodes are globally observed MAC addresses / access points.
-- Every graph uses the same node universe, normally 70 APs from metadata.
-- A node has an `observed` attribute when that AP was seen at that location.
-- Edges are added between observed AP pairs.
-- Edge weights represent inferred interference.
-- Training uses continuous edge weights in `[0, 1]`, not binary edges.
+This starts the clean conditional MetroFi training from `configs/config_metrofi_cond.py`. It writes checkpoints and final weights under `checkpoints/metrofi-cond-nosf/`, and results under `results/metrofi-cond-nosf/`. The GPU request matches the previous MetroFi conditional training run.
 
-The raw dataset builder reads rows with:
-
-```text
-mac lat lon rssi
-```
-
-It factorizes MAC addresses into node ids and `(lat, lon)` pairs into location
-ids. For each location, it computes mean RSSI per observed AP, converts RSSI to
-dBm, then to Watts, and creates pairwise interference edges between observed APs.
-The supported pairwise interference models are:
-
-- `min`: `min(power_a, power_b)`, the default
-- `sum`: `power_a + power_b`
-- `product`: `power_a * power_b`
-
-The stored edge value can be dBm or Watts. The default is dBm.
-
-## Dataset Creation
-
-Expected raw input:
-
-```bash
-data/metrofi/stumble_filtered.txt
-```
-
-Build the processed pickle:
-
-```bash
-python src/dataset_generation/gen_metrofi_dataset.py --force
-```
-
-Useful options:
-
-```bash
-python src/dataset_generation/gen_metrofi_dataset.py \
-  --input data/metrofi/stumble_filtered.txt \
-  --output data/metrofi/metrofi.pkl \
-  --model min \
-  --interference-output dbm \
-  --val-ratio 0.1 \
-  --test-ratio 0.1 \
-  --seed 17 \
-  --force
-```
-
-For a quick smoke dataset:
-
-```bash
-python src/dataset_generation/gen_metrofi_dataset.py \
-  --max-locations 100 \
-  --force
-```
-
-The resulting pickle contains:
-
-- `train`: list of NetworkX graphs
-- `val`: list of NetworkX graphs
-- `test`: list of NetworkX graphs
-- `metadata`: MAC address list, location coordinates, interference metadata
-
-The builder also writes inspection figures under `data/metrofi/figures/`.
-
-## How Loading Works
-
-`WirelessDatasetModule` loads `data/metrofi/metrofi.pkl`, normalizes all edge
-weights globally to `[0, 1]`, and preserves the original physical value in
-`interference_raw`.
-
-It filters out graphs with too few observed nodes. The default threshold is:
-
-```python
-cfg.data.min_observed_nodes = 3
-```
-
-Training batches contain:
-
-```python
-(node_features, adjacency, observed_mask)
-```
-
-The `observed_mask` is important: it tells the model which APs were observed in
-that location. The adjacency is padded to the global AP count.
-
-## Training
-
-Train MetroFi with:
-
-```bash
-python main.py train --model metrofi --device cuda:0
-```
-
-python csub.py -n train-metrofi-bs128 --train --node_type h200 -g 0.3 --command "
+python csub.py -n train-metrofi-cond-nosf-bs256 --train --node_type h200 -g 0.2 --command "
 conda activate graphon;
 cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
-python main.py train --model metrofi --device cuda:0
-
-
-For CPU debugging:
-
-```bash
-python main.py train --model metrofi --device cpu
-```
-
-The MetroFi config sets:
-
-```python
-training_mode = "weighted"
-```
-
-That makes `main.py` select `DiffusionWeightedGraphModule`. In this mode:
-
-- The model output edge dimension is forced to `E = 1`.
-- The loss is masked MSE between predicted edge weights and target adjacency.
-- The Jacobi SDE still perturbs edge weights in `[0, 1]`.
-- Validation logs weighted MSE and sampled wireless graphs.
-- EMA is enabled by default.
-
-Checkpoints are written under:
-
-```text
-checkpoints/metrofi/
-```
-
-At fit end, the code saves:
-
-```text
-checkpoints/metrofi/weights.pth
-checkpoints/metrofi/weights_ema.pth
-```
-
-Lightning checkpoints are also saved according to
-`cfg.general.save_checkpoint_every_n_epochs`.
-
-## Generation And Evaluation
-
-Generate and evaluate with:
-
-```bash
-python main.py gen --model metrofi --device cuda:0
-```
-
-Or use a specific checkpoint:
-
-```bash
-python main.py gen \
-  --model metrofi \
-  --device cuda:0 \
-  --checkpoint checkpoints/metrofi/weights_ema.pth \
-  --num-samples 128
-```
-
-The MetroFi generation path is `run_gen_wireless` in `main.py`. It:
-
-1. Loads the MetroFi dataset and metadata.
-2. Forces `training_mode = "weighted"`.
-3. Sets the sampler node count to the fixed AP universe from metadata.
-4. Loads `weights_ema.pth` if present, otherwise `weights.pth`.
-5. Samples full weighted adjacency matrices.
-6. Rescales generated weights from `[0, 1]` back to the dataset interference range.
-7. Converts dense weighted adjacencies to NetworkX graphs.
-8. Computes wireless metrics against the test split.
-9. Saves plots under `samples/`.
-
-Expected generated artifacts include:
-
-```text
-samples/wireless.png
-samples/wireless_edge_weight_hist_full.png
-samples/wireless_edge_weight_hist_subgraphs.png
-samples/wireless_weight_heatmaps_full.png
-```
-
-The sampler currently also writes reverse-process diagnostic figures to:
-
-```text
-tests/history_graphs.png
-tests/history_heatmaps.png
-```
-
-That happens inside `PCSolver.solve`, so it is part of generation, not a unit
-test.
-
-## Wireless Metrics
-
-`WirelessSamplingMetrics` computes:
-
-- `edge_ks`: mean KS statistic over edge-wise interference distributions
-- `edge_wasserstein`: mean Wasserstein distance over edge-wise interference distributions
-- `edge_pairs_used`: number of AP pairs with both reference and generated values
-- `degree_weighted`: MMD over weighted degree histograms
-- `spectre`: spectral MMD on sampled subgraphs
-
-For structural metrics, generated full graphs are sampled down to the empirical
-test graph size distribution. This tries to compare generated full AP-universe
-graphs to the smaller observed-location subgraphs in the reference set.
-
-## Important Caveats
-
-- The MetroFi raw and processed data are not included in this checkout.
-- `src/dataset/wireless.py` error text says to run `tools/build_metrofi_dataset.py`,
-  but the actual script in this repo is
-  `src/dataset_generation/gen_metrofi_dataset.py`.
-- Training uses normalized weights, while some evaluation plots and metrics use
-  `interference_raw`. Keep this distinction clear when changing evaluation.
-- Generated wireless graphs are dense if `keep_zero_weights=True`; metrics that
-  iterate over all edges may include zero-weight generated edges.
-- The config assumes a 70-node AP universe, but generation can override this
-  from dataset metadata via `datamodule.num_mac_addresses()`.
-
-## Likely Files To Modify Next
-
-For training changes:
-
-- `configs/config_metrofi.py`
-- `src/train/trainer_graph.py`, especially `DiffusionWeightedGraphModule`
-- `src/train/base_module.py`, for validation sampling and logging
-
-For evaluation changes:
-
-- `main.py`, function `run_gen_wireless`
-- `src/metrics/val.py`, class `WirelessSamplingMetrics`
-- `src/visualization/plots.py`, for wireless plots
-
-For dataset changes:
-
-- `src/dataset_generation/gen_metrofi_dataset.py`
-- `src/dataset/wireless.py`
-
-## Training Job Commands
-
-Debug conditional MetroFi run. This uses `configs/config_metrofi_debug.py`: 64 train graphs, 16 validation graphs, 16 test graphs, batch size 8, 20 diffusion steps, and `conditional=True`. It writes to `checkpoints/metrofi-debug-cond`.
-
-```bash
-python csub.py -n debug-metrofi-cond --train --node_type h200 -g 0.3 --command "
-conda activate graphon;
-cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
-python main.py train --model metrofi_debug --device cuda:0
+python main.py train --model metrofi_cond --device cuda:0 --batch-size 256
 "
-```
 
-Official unconditional MetroFi training. This uses `configs/config_metrofi.py`: weighted training only, `conditional=False`, `positional_encoding=False`. It writes to `checkpoints/metrofi-uncond`.
+## 2. Hyperparameter Search On 128 Validation Graphs
 
-```bash
-python csub.py -n train-metrofi-uncond-bs128 --train --node_type h200 -g 0.3 --command "
+Run this after training finishes and after you fill in the checkpoint path. The sweep is intentionally local, not broad: the previous best region was `guidance=2.0`, `predictor=milstein`, `eps_time=0.05`, default corrector. Since CFG guidance often has the largest effect, most commands vary `guidance_scale` around that point. The remaining commands probe `eps_time`, `heun`, and `em` as sanity checks.
+
+All search commands use:
+
+- `--conditional-eval-split val`
+- `--conditional-eval-graphs 128`
+- `--conditional-eval-condition-mode true`
+- `--no-model-use-sampled-features`
+- `--batch-size 256`
+- `--sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1`
+- `-g 0.1`
+
+How to choose the best validation run:
+
+- Primary if we care about histogram matching: lower `edge_weight_pooled_wasserstein` and `edge_weight_pooled_hist_js`.
+- Secondary reconstruction checks: lower `mse` and `mae`.
+- Also open the saved `pooled_edge_weight_hist.png` for the promising runs.
+
+Validation outputs are saved under `results/metrofi-cond-nosf/conditional_val/`, and the summary line is appended to `results/metrofi-cond-nosf/conditional_val/metrics.txt`.
+
+python csub.py -n mf-nosf-local-01-mil-g12-e03 --train --node_type h200 -g 0.1 --command "
 conda activate graphon;
 cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
-python main.py train --model metrofi_uncond --device cuda:0
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g12-e03 --guidance-scale 1.2 --sampler-predictor milstein --sampler-eps-time 0.03
 "
-```
 
-Official conditional MetroFi training. This uses `configs/config_metrofi_cond.py`: location condition, node positional encoding, CFG, and conditional masked MSE/MAE validation. It writes to `checkpoints/metrofi-cond`.
-
-```bash
-python csub.py -n train-metrofi-cond-bs128 --train --node_type h200 -g 0.3 --command "
+python csub.py -n mf-nosf-local-02-mil-g12-e05 --train --node_type h200 -g 0.1 --command "
 conda activate graphon;
 cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
-python main.py train --model metrofi_cond --device cuda:0
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g12-e05 --guidance-scale 1.2 --sampler-predictor milstein --sampler-eps-time 0.05
 "
-```
 
-Official conditional generation/evaluation after training:
-
-```bash
-python csub.py -n eval-metrofi-cond --train --node_type h200 -g 0.3 --command "
+python csub.py -n mf-nosf-local-03-mil-g15-e03 --train --node_type h200 -g 0.1 --command "
 conda activate graphon;
 cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
-python main.py gen --model metrofi_cond --device cuda:0
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g15-e03 --guidance-scale 1.5 --sampler-predictor milstein --sampler-eps-time 0.03
 "
-```
+
+python csub.py -n mf-nosf-local-04-mil-g15-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g15-e05 --guidance-scale 1.5 --sampler-predictor milstein --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-05-mil-g18-e03 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g18-e03 --guidance-scale 1.8 --sampler-predictor milstein --sampler-eps-time 0.03
+"
+
+python csub.py -n mf-nosf-local-06-mil-g18-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g18-e05 --guidance-scale 1.8 --sampler-predictor milstein --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-07-mil-g20-e03 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g20-e03 --guidance-scale 2.0 --sampler-predictor milstein --sampler-eps-time 0.03
+"
+
+python csub.py -n mf-nosf-local-08-mil-g20-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g20-e05 --guidance-scale 2.0 --sampler-predictor milstein --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-09-mil-g22-e03 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g22-e03 --guidance-scale 2.2 --sampler-predictor milstein --sampler-eps-time 0.03
+"
+
+python csub.py -n mf-nosf-local-10-mil-g22-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g22-e05 --guidance-scale 2.2 --sampler-predictor milstein --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-11-mil-g25-e03 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g25-e03 --guidance-scale 2.5 --sampler-predictor milstein --sampler-eps-time 0.03
+"
+
+python csub.py -n mf-nosf-local-12-mil-g25-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-milstein-g25-e05 --guidance-scale 2.5 --sampler-predictor milstein --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-13-heun-g08-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-heun-g08-e05 --guidance-scale 0.8 --sampler-predictor heun --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-14-heun-g10-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-heun-g10-e05 --guidance-scale 1.0 --sampler-predictor heun --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-15-heun-g12-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-heun-g12-e05 --guidance-scale 1.2 --sampler-predictor heun --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-16-heun-g15-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-heun-g15-e05 --guidance-scale 1.5 --sampler-predictor heun --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-17-em-g15-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-em-g15-e05 --guidance-scale 1.5 --sampler-predictor em --sampler-eps-time 0.05
+"
+
+python csub.py -n mf-nosf-local-18-em-g20-e05 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch499.ckpt --conditional-eval-only --conditional-eval-split val --conditional-eval-graphs 128 --conditional-eval-condition-mode true --no-model-use-sampled-features --batch-size 256 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --conditional-eval-name local-nosf-em-g20-e05 --guidance-scale 2.0 --sampler-predictor em --sampler-eps-time 0.05
+"
+
+
+## 3. Epoch999 Test Command
+
+Run this for the final test on `epoch999.ckpt`. The command uses the current best setting: `guidance=1.8`, `predictor=milstein`, `eps_time=0.03`, with `use_sampled_features=False`.
+
+The test run evaluates 943 test graphs and saves `conditional_samples.pt`, `metrics.json`, `comparison.png`, and `pooled_edge_weight_hist.png` under `results/metrofi-cond-nosf/conditional_test/`. The saved tensor file lets us recompute metrics later without rerunning sampling.
+
+python csub.py -n eval-metrofi-test-nosf-best-e999-g18-e03 --train --node_type h200 -g 0.1 --command "
+conda activate graphon;
+cd /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion;
+python main.py gen --model metrofi_cond --device cuda:0 --checkpoint /mnt/lts4/scratch/home/yqin/GraphGeneration/jacobi-graph-diffusion/checkpoints/metrofi-cond-nosf/epoch999.ckpt --conditional-eval-only --conditional-eval-split test --conditional-eval-graphs 943 --conditional-eval-name test-nosf-best-e999-g18-milstein-e03 --conditional-eval-condition-mode true --guidance-scale 1.8 --sampler-predictor milstein --sampler-eps-time 0.03 --sampler-snr 0.01 --sampler-scale-eps 0.1 --sampler-n-steps 1 --no-model-use-sampled-features --batch-size 256
+"

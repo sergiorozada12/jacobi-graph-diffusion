@@ -13,8 +13,15 @@ from src.features.extra_features import ExtraFeatures
 from src.models.transformer_model import GraphTransformer
 from src.sample.sampler import Sampler
 from src.sde.sde import JacobiSDE
+from src.metrics.val import masked_adjacency_weight_metrics
 from src.utils import adjs_to_graphs, build_time_schedule, node_positional_encoding
-from src.visualization.plots import close_figure, plot_edge_weight_histograms, save_conditional_adjacency_analysis
+from src.visualization.plots import (
+    close_figure,
+    plot_edge_weight_histograms,
+    plot_pooled_edge_weight_histogram,
+    save_conditional_adjacency_analysis,
+    save_figure,
+)
 
 
 class DiffusionBaseModule(pl.LightningModule):
@@ -265,18 +272,6 @@ class DiffusionBaseModule(pl.LightningModule):
         if self.use_ema and self.ema_model is not None:
             torch.save(self.ema_model.state_dict(), ckpt_dir / "weights_ema.pth")
 
-    @staticmethod
-    def _masked_adj_metrics(gen_adj: torch.Tensor, gt_adj: torch.Tensor, observed_mask: torch.Tensor) -> dict:
-        observed_mask = observed_mask.bool()
-        edge_mask = (observed_mask[:, :, None] & observed_mask[:, None, :]).float()
-        diag = torch.eye(edge_mask.size(-1), device=edge_mask.device).unsqueeze(0)
-        edge_mask = edge_mask * (1.0 - diag)
-        denom = edge_mask.flatten(1).sum(dim=1).clamp_min(1.0)
-        diff = gen_adj - gt_adj
-        mse = ((diff.pow(2) * edge_mask).flatten(1).sum(dim=1) / denom).mean()
-        mae = ((diff.abs() * edge_mask).flatten(1).sum(dim=1) / denom).mean()
-        return {"mse": mse, "mae": mae}
-
     def _val_conditional_sampler(self, adj, observed_mask, coords):
         if not self.conditional or coords is None or observed_mask is None:
             return
@@ -298,16 +293,30 @@ class DiffusionBaseModule(pl.LightningModule):
                 self.cfg.sampler.test_graphs = old_test_graphs
 
         gen_adj = adj_samples[: adj.size(0)].to(adj.device).float()
-        metrics = self._masked_adj_metrics(gen_adj, adj.float(), observed_mask.to(adj.device))
+        metrics, gt_edge_values, gen_edge_values = masked_adjacency_weight_metrics(
+            adj.float(),
+            gen_adj,
+            observed_mask.to(adj.device),
+        )
 
         name = getattr(self.cfg.general, "name", None) or self.cfg.data.data
         out_dir = Path(self.cfg.general.save_path) / name / "conditional_val"
         out_dir.mkdir(parents=True, exist_ok=True)
+        metric_text = " ".join(f"{key}={val:.8f}" for key, val in metrics.items())
         with open(out_dir / "metrics.txt", "a") as f:
             f.write(
                 f"epoch={self.current_epoch} step={self.global_step} "
-                f"mse={metrics['mse'].item():.8f} mae={metrics['mae'].item():.8f} "
-                f"graphs={adj.size(0)}\n"
+                f"graphs={adj.size(0)} {metric_text}\n"
+            )
+
+        for key, val in metrics.items():
+            self.log(
+                f"val/conditional_{key}",
+                val,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=key in {"mse", "mae"},
+                sync_dist=True,
             )
 
         sample_dir = out_dir / f"epoch_{self.current_epoch:04d}_step_{self.global_step}"
@@ -318,6 +327,12 @@ class DiffusionBaseModule(pl.LightningModule):
             sample_dir,
             matrix_size=self.cfg.data.max_node_num,
         )
+        hist_fig = plot_pooled_edge_weight_histogram(
+            gt_edge_values,
+            gen_edge_values,
+            dataset_name=f"metrofi conditional val epoch {self.current_epoch}",
+        )
+        save_figure(hist_fig, sample_dir / "pooled_edge_weight_hist.png", dpi=150)
 
 
     def _val_sampler(self):

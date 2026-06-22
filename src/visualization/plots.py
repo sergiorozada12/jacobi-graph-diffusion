@@ -180,6 +180,33 @@ def save_conditional_adjacency_analysis(
         fig.colorbar(image, ax=axes.ravel().tolist(), shrink=0.75, label="Normalized interference")
     save_figure(fig, out_dir / "comparison.png", dpi=dpi)
 
+
+def plot_pooled_edge_weight_histogram(
+    reference_values: ArrayLike,
+    generated_values: ArrayLike,
+    *,
+    bins: int = 50,
+    value_range: Tuple[float, float] = (0.0, 1.0),
+    dataset_name: Optional[str] = None,
+) -> plt.Figure:
+    ref = _to_numpy(reference_values).astype(float).reshape(-1)
+    gen = _to_numpy(generated_values).astype(float).reshape(-1)
+    ref = ref[np.isfinite(ref)]
+    gen = gen[np.isfinite(gen)]
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 4))
+    if ref.size:
+        ax.hist(ref, bins=bins, range=value_range, density=True, alpha=0.6, label="ground truth", color="#2980b9")
+    if gen.size:
+        ax.hist(gen, bins=bins, range=value_range, density=True, alpha=0.6, label="generated", color="#c0392b")
+    ax.set_xlim(*value_range)
+    ax.set_xlabel("Normalized edge weight")
+    ax.set_ylabel("Density")
+    ax.set_title(dataset_name or "Pooled edge-weight distribution")
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
 def plot_graph_grid(
     graph_list: Sequence[nx.Graph],
     *,
