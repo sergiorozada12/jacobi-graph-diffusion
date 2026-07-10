@@ -117,7 +117,12 @@ class Sampler:
     ):
         if condition is not None and fixed_flags is not None and condition.size(0) != fixed_flags.size(0):
             raise ValueError("condition and fixed_flags must contain the same number of graphs.")
-        total_samples = fixed_flags.size(0) if fixed_flags is not None else self.cfg.sampler.test_graphs
+        if fixed_flags is not None:
+            total_samples = fixed_flags.size(0)
+        elif condition is not None:
+            total_samples = condition.size(0)
+        else:
+            total_samples = self.cfg.sampler.test_graphs
         num_rounds = math.ceil(total_samples / self.cfg.data.batch_size)
         generated = []
         first_adj = None
@@ -125,11 +130,12 @@ class Sampler:
         collected_adjs = []
         for round_idx in range(num_rounds):
             start = round_idx * self.cfg.data.batch_size
-            end = start + self.cfg.data.batch_size
+            end = min(start + self.cfg.data.batch_size, total_samples)
+            round_batch_size = end - start
             if fixed_flags is not None:
                 flags = fixed_flags[start:end].to(self.device)
             else:
-                flags = self._make_flags(use_node_dist=use_node_dist)
+                flags = self._make_flags(use_node_dist=use_node_dist)[:round_batch_size]
             cond_batch = None
             if condition is not None:
                 cond_batch = condition[start:end].to(self.device)

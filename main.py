@@ -8,6 +8,15 @@ from pathlib import Path
 from omegaconf import OmegaConf
 import numpy as np
 
+from src.metrics.metrofi_eval import (
+    apply_condition_mode,
+    flatten_masked_eval_metrics,
+    run_metrofi_masked_eval_variants,
+    save_metrofi_masked_eval_artifacts,
+    select_metrofi_eval_tensors,
+    timestamped_eval_dir,
+)
+
 
 def print_header(title):
     print("\n" + "=" * 80)
@@ -546,17 +555,16 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             json.dump(data, f, indent=4)
         log_success(f"Results saved to {out_path}")
 
-def _print_wireless_conditional_metrics(split, metrics):
-    if metrics is None:
+def _print_wireless_masked_eval_metrics(label, split, results):
+    if results is None:
         return
-    print_header(f"Conditional wireless {split}")
-    print_row(f"conditional_{split}_masked_mse", metrics["mse"])
-    print_row(f"conditional_{split}_masked_mae", metrics["mae"])
-    for key in sorted(k for k in metrics if k not in ("mse", "mae")):
-        print_row(f"conditional_{split}_{key}", metrics[key])
+    flat_metrics = flatten_masked_eval_metrics(results)
+    print_header(f"{label} wireless {split} masked eval")
+    for key in sorted(flat_metrics):
+        print_row(f"{label}_{split}_{key}", flat_metrics[key])
 
 
-def _run_wireless_conditional_eval(
+def _run_wireless_masked_eval(
     cfg,
     datamodule,
     sampler,
@@ -566,87 +574,56 @@ def _run_wireless_conditional_eval(
     run_name=None,
     condition_mode="true",
 ):
-    if not getattr(cfg.model, "conditional", False):
-        return None
-
+    label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
     dataset = getattr(datamodule, f"{split}_ds")
-    if not hasattr(dataset, "tensors") or len(dataset.tensors) < 4:
-        log_warning(f"Skipping conditional {split} eval: dataset has no coordinates.")
-        return None
-
-    n_metric = min(int(cfg.sampler.conditional_eval_graphs), len(dataset))
-    if n_metric <= 0:
-        log_warning(f"Skipping conditional {split} eval: no graphs selected.")
-        return None
+    n_graphs = int(getattr(cfg.sampler, "conditional_eval_graphs", cfg.sampler.test_graphs))
     seed = int(getattr(cfg.sampler, "conditional_eval_seed", cfg.general.seed))
-    rng = np.random.default_rng(seed)
-    indices = rng.choice(len(dataset), size=n_metric, replace=False)
 
-    tensors = dataset.tensors
-    gt_adj = tensors[1][indices].to(cfg.general.device).float()
-    observed_mask = tensors[2][indices].to(cfg.general.device).bool()
-    coords = tensors[3][indices].to(cfg.general.device).float()
-
-    condition_mode = str(condition_mode).lower()
-    if condition_mode == "zero":
-        coords = torch.zeros_like(coords)
-    elif condition_mode == "shuffled":
-        perm_np = rng.permutation(n_metric)
-        if n_metric > 1 and np.array_equal(perm_np, np.arange(n_metric)):
-            perm_np = np.roll(perm_np, 1)
-        perm = torch.as_tensor(perm_np, device=coords.device, dtype=torch.long)
-        coords = coords[perm]
-    elif condition_mode != "true":
-        raise ValueError(f"Unknown conditional eval condition mode: {condition_mode}")
-
-    old_test_graphs = cfg.sampler.test_graphs
-    cfg.sampler.test_graphs = n_metric
     try:
-        _, _, adj_samples = sampler.sample(
-            keep_isolates=True,
-            return_adjs=True,
-            use_node_dist=False,
-            nodelist=list(range(cfg.data.max_node_num)),
-            keep_zero_weights=True,
-            condition=coords,
-            fixed_flags=observed_mask,
+        indices, gt_adj, observed_mask, coords, rng = select_metrofi_eval_tensors(
+            dataset,
+            n_graphs,
+            cfg.general.device,
+            seed,
         )
-    finally:
-        cfg.sampler.test_graphs = old_test_graphs
+    except ValueError as exc:
+        log_warning(f"Skipping {label} {split} masked eval: {exc}")
+        return None
 
-    gen_adj = adj_samples[:n_metric].to(gt_adj.device).float()
-    gt_adj = gt_adj[:n_metric]
-    observed_mask = observed_mask[:n_metric]
-    from src.metrics.val import masked_adjacency_weight_metrics
+    if getattr(cfg.model, "conditional", False):
+        if coords is None:
+            log_warning(f"Skipping conditional {split} masked eval: dataset has no coordinates.")
+            return None
+        coords = apply_condition_mode(coords, rng, condition_mode)
+    else:
+        coords = None
+        condition_mode = "none"
 
-    metrics, gt_edge_values, gen_edge_values = masked_adjacency_weight_metrics(
+    results = run_metrofi_masked_eval_variants(
+        cfg,
+        sampler,
         gt_adj,
-        gen_adj,
         observed_mask,
+        condition=coords,
+        include_masked_variant=True,
+        include_full_variant=True,
     )
-
-    from src.visualization.plots import (
-        plot_pooled_edge_weight_histogram,
-        save_conditional_adjacency_analysis,
-        save_figure,
-    )
-
-    from datetime import datetime
 
     guidance = float(getattr(cfg.sampler, "guidance_scale", 0.0))
     guidance_tag = f"g{guidance:g}".replace(".", "p")
     ckpt_tag = Path(checkpoint_path).stem.replace("=", "") if checkpoint_path else "unknownckpt"
     name_tag = run_name or f"samples_{guidance_tag}_{ckpt_tag}_{condition_mode}"
-    run_tag = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    out_dir = Path(cfg.general.save_path) / experiment_name(cfg) / f"conditional_{split}"
+    out_dir = Path(cfg.general.save_path) / experiment_name(cfg) / f"{label}_{split}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    sample_dir = out_dir / f"{name_tag}_seed{seed}_n{n_metric}_{run_tag}"
+    sample_dir = timestamped_eval_dir(out_dir, name_tag, seed, gt_adj.size(0))
     sample_dir.mkdir(parents=True, exist_ok=True)
 
+    flat_metrics = flatten_masked_eval_metrics(results)
     metadata = {
+        "label": label,
         "split": split,
         "seed": seed,
-        "graphs": n_metric,
+        "graphs": int(gt_adj.size(0)),
         "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
         "checkpoint_tag": ckpt_tag,
         "use_ema": bool(use_ema) if use_ema is not None else None,
@@ -665,43 +642,50 @@ def _run_wireless_conditional_eval(
         "use_sampled_features": bool(getattr(cfg.model, "use_sampled_features", True)),
         "batch_size": int(getattr(cfg.data, "batch_size", 0)),
         "run_name": name_tag,
-        "run_tag": run_tag,
         "sample_dir": str(sample_dir),
     }
     meta_text = " ".join(f"{key}={val}" for key, val in metadata.items())
-    metric_text = " ".join(f"{key}={val:.8f}" for key, val in metrics.items())
+    metric_text = " ".join(f"{key}={val:.8f}" for key, val in flat_metrics.items())
     with open(out_dir / "metrics.txt", "a") as f:
         f.write(f"{meta_text} {metric_text}\n")
+
+    serializable_results = {}
+    for variant, payload in results.items():
+        serializable_results[variant] = {
+            "metrics": payload["metrics"],
+            "gen_adj": payload["gen_adj"].detach().cpu(),
+            "gt_edge_values": payload["gt_edge_values"],
+            "gen_edge_values": payload["gen_edge_values"],
+        }
     torch.save(
         {
             "metadata": metadata,
             "indices": torch.as_tensor(indices, dtype=torch.long),
             "gt_adj": gt_adj.detach().cpu(),
-            "gen_adj": gen_adj.detach().cpu(),
             "observed_mask": observed_mask.detach().cpu(),
-            "coords": coords.detach().cpu(),
-            "metrics": metrics,
+            "coords": None if coords is None else coords.detach().cpu(),
+            "results": serializable_results,
+            "metrics": flat_metrics,
         },
-        sample_dir / "conditional_samples.pt",
+        sample_dir / "masked_eval_samples.pt",
     )
     with open(sample_dir / "metrics.json", "w") as f:
-        json.dump({"metadata": metadata, "metrics": metrics}, f, indent=2)
+        json.dump({"metadata": metadata, "metrics": flat_metrics}, f, indent=2)
 
-    save_conditional_adjacency_analysis(
+    save_metrofi_masked_eval_artifacts(
+        results,
         gt_adj.detach().cpu(),
-        gen_adj.detach().cpu(),
         observed_mask.detach().cpu(),
         sample_dir,
         matrix_size=cfg.data.max_node_num,
+        title_prefix=f"metrofi {label} {split}",
     )
-    hist_fig = plot_pooled_edge_weight_histogram(
-        gt_edge_values,
-        gen_edge_values,
-        dataset_name=f"metrofi conditional {split} pooled edge weights",
-    )
-    save_figure(hist_fig, sample_dir / "pooled_edge_weight_hist.png", dpi=150)
 
-    return metrics
+    return results
+
+
+def _run_wireless_conditional_eval(*args, **kwargs):
+    return _run_wireless_masked_eval(*args, **kwargs)
 
 def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
     from src.models.transformer_model import GraphTransformer
@@ -777,7 +761,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
 
     cond_split = getattr(args, "conditional_eval_split", "test")
     if getattr(args, "conditional_eval_only", False):
-        cond_metrics = _run_wireless_conditional_eval(
+        masked_eval_results = _run_wireless_masked_eval(
             cfg,
             datamodule,
             sampler,
@@ -787,7 +771,8 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             run_name=getattr(args, "conditional_eval_name", None),
             condition_mode=getattr(args, "conditional_eval_condition_mode", "true"),
         )
-        _print_wireless_conditional_metrics(cond_split, cond_metrics)
+        label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
+        _print_wireless_masked_eval_metrics(label, cond_split, masked_eval_results)
         return
 
     samples, _, adj_samples = sampler.sample(
@@ -866,7 +851,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             for k, v in sorted(ratios.items()):
                 print_row(k, v)
 
-        cond_metrics = _run_wireless_conditional_eval(
+        masked_eval_results = _run_wireless_masked_eval(
             cfg,
             datamodule,
             sampler,
@@ -876,7 +861,8 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             run_name=getattr(args, "conditional_eval_name", None),
             condition_mode=getattr(args, "conditional_eval_condition_mode", "true"),
         )
-        _print_wireless_conditional_metrics(cond_split, cond_metrics)
+        label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
+        _print_wireless_masked_eval_metrics(label, cond_split, masked_eval_results)
 
         try:
             ref_graphs_raw = []
@@ -1032,7 +1018,7 @@ def main():
     gen_parser.add_argument("--conditional-eval-graphs", type=int, default=None, help="Number of graphs for conditional masked MSE/MAE.")
     gen_parser.add_argument("--conditional-eval-name", type=str, default=None, help="Readable output folder prefix for conditional eval artifacts.")
     gen_parser.add_argument("--conditional-eval-condition-mode", choices=["true", "shuffled", "zero"], default="true", help="Coordinate condition ablation mode for MetroFi conditional eval.")
-    gen_parser.add_argument("--conditional-eval-only", action="store_true", help="Only run conditional masked MSE/MAE and skip full sampling metrics.")
+    gen_parser.add_argument("--conditional-eval-only", action="store_true", help="Only run MetroFi masked eval variants and skip full sampling metrics.")
     gen_parser.add_argument("--no-ema", action="store_true", help="Disable loading EMA checkpoint weights.")
     gen_parser.add_argument("--skip-size-ref", action="store_true", help="Skip loading size-specific reference metrics.")
     gen_parser.add_argument("--no-average-ratio-to-size-ref", dest="no_average_ratio_to_size_ref", action="store_true", help="Skip calculating size-matched reference ratios.")

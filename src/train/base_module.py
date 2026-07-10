@@ -13,14 +13,15 @@ from src.features.extra_features import ExtraFeatures
 from src.models.transformer_model import GraphTransformer
 from src.sample.sampler import Sampler
 from src.sde.sde import JacobiSDE
-from src.metrics.val import masked_adjacency_weight_metrics
+from src.metrics.metrofi_eval import (
+    build_metrofi_masked_eval_figures,
+    flatten_masked_eval_metrics,
+    run_metrofi_masked_eval_variants,
+)
 from src.utils import adjs_to_graphs, build_time_schedule, node_positional_encoding
 from src.visualization.plots import (
     close_figure,
     plot_edge_weight_histograms,
-    plot_pooled_edge_weight_histogram,
-    save_conditional_adjacency_analysis,
-    save_figure,
 )
 
 
@@ -247,8 +248,12 @@ class DiffusionBaseModule(pl.LightningModule):
         X, adj, observed_mask, coords = self._extract_batch_tensors(batch)
         self._validation_step_impl(X, adj, observed_mask, coords)
         if not self._ran_sampling_metrics:
-            if self.conditional:
-                self._val_conditional_sampler(adj, observed_mask, coords)
+            if self.dataset_name == "metrofi":
+                self._val_metrofi_masked_sampler(adj, observed_mask, coords if self.conditional else None)
+                if not self.conditional:
+                    self._val_sampler()
+            elif self.conditional:
+                self._val_metrofi_masked_sampler(adj, observed_mask, coords)
             else:
                 self._val_sampler()
             self._ran_sampling_metrics = True
@@ -272,67 +277,63 @@ class DiffusionBaseModule(pl.LightningModule):
         if self.use_ema and self.ema_model is not None:
             torch.save(self.ema_model.state_dict(), ckpt_dir / "weights_ema.pth")
 
-    def _val_conditional_sampler(self, adj, observed_mask, coords):
-        if not self.conditional or coords is None or observed_mask is None:
+    def _val_metrofi_masked_sampler(self, adj, observed_mask, coords):
+        if self.dataset_name != "metrofi" or observed_mask is None:
             return
+        if self.conditional and coords is None:
+            return
+
         eval_model = self._get_eval_model()
-        old_test_graphs = self.cfg.sampler.test_graphs
-        self.cfg.sampler.test_graphs = adj.size(0)
         with self._using_sampler_model(eval_model):
-            try:
-                _, _, adj_samples = self.sampler.sample(
-                    keep_isolates=True,
-                    return_adjs=True,
-                    use_node_dist=False,
-                    nodelist=list(range(self.cfg.data.max_node_num)),
-                    keep_zero_weights=True,
-                    condition=coords,
-                    fixed_flags=observed_mask.bool(),
-                )
-            finally:
-                self.cfg.sampler.test_graphs = old_test_graphs
+            results = run_metrofi_masked_eval_variants(
+                self.cfg,
+                self.sampler,
+                adj.float(),
+                observed_mask.to(adj.device).bool(),
+                condition=coords,
+                include_masked_variant=True,
+                include_full_variant=True,
+            )
 
-        gen_adj = adj_samples[: adj.size(0)].to(adj.device).float()
-        metrics, gt_edge_values, gen_edge_values = masked_adjacency_weight_metrics(
-            adj.float(),
-            gen_adj,
-            observed_mask.to(adj.device),
-        )
-
+        flat_metrics = flatten_masked_eval_metrics(results)
+        mode = "conditional" if self.conditional else "unconditional"
         name = getattr(self.cfg.general, "name", None) or self.cfg.data.data
-        out_dir = Path(self.cfg.general.save_path) / name / "conditional_val"
+        out_dir = Path(self.cfg.general.save_path) / name / f"{mode}_val"
         out_dir.mkdir(parents=True, exist_ok=True)
-        metric_text = " ".join(f"{key}={val:.8f}" for key, val in metrics.items())
+        metric_text = " ".join(f"{key}={val:.8f}" for key, val in flat_metrics.items())
         with open(out_dir / "metrics.txt", "a") as f:
             f.write(
                 f"epoch={self.current_epoch} step={self.global_step} "
                 f"graphs={adj.size(0)} {metric_text}\n"
             )
 
-        for key, val in metrics.items():
+        for key, val in flat_metrics.items():
             self.log(
-                f"val/conditional_{key}",
+                f"val/{mode}_{key}",
                 val,
                 on_step=False,
                 on_epoch=True,
-                prog_bar=key in {"mse", "mae"},
+                prog_bar=key.endswith("_mse") or key.endswith("_mae"),
                 sync_dist=True,
             )
 
-        sample_dir = out_dir / f"epoch_{self.current_epoch:04d}_step_{self.global_step}"
-        save_conditional_adjacency_analysis(
-            adj.detach().cpu(),
-            gen_adj.detach().cpu(),
-            observed_mask.detach().cpu(),
-            sample_dir,
-            matrix_size=self.cfg.data.max_node_num,
-        )
-        hist_fig = plot_pooled_edge_weight_histogram(
-            gt_edge_values,
-            gen_edge_values,
-            dataset_name=f"metrofi conditional val epoch {self.current_epoch}",
-        )
-        save_figure(hist_fig, sample_dir / "pooled_edge_weight_hist.png", dpi=150)
+        if wandb.run:
+            figures = build_metrofi_masked_eval_figures(
+                results,
+                title_prefix=f"metrofi {mode} val epoch {self.current_epoch}",
+            )
+            for variant, variant_figures in figures.items():
+                log_payload = {}
+                hist_fig = variant_figures.get("hist")
+                graph_fig = variant_figures.get("sampled_graph")
+                if hist_fig is not None:
+                    log_payload[f"val/{mode}_{variant}_edge_weight_hist"] = wandb.Image(hist_fig)
+                    close_figure(hist_fig)
+                if graph_fig is not None:
+                    log_payload[f"val/{mode}_{variant}_sampled_graph"] = wandb.Image(graph_fig)
+                    close_figure(graph_fig)
+                if log_payload:
+                    wandb.log(log_payload, commit=False)
 
 
     def _val_sampler(self):
