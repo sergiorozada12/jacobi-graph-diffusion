@@ -42,7 +42,7 @@ from src.metrics.abstract import compute_ratios
 PRINT_TIME = False
 
 
-def pooled_edge_weight_distribution_metrics(reference_values, generated_values, bins=50, value_range=(0.0, 1.0)) -> Dict[str, float]:
+def pooled_edge_weight_distribution_metrics(reference_values, generated_values, bins=10, value_range=(0.0, 1.0)) -> Dict[str, float]:
     ref = np.asarray(reference_values, dtype=float).reshape(-1)
     gen = np.asarray(generated_values, dtype=float).reshape(-1)
     ref = ref[np.isfinite(ref)]
@@ -75,13 +75,14 @@ def pooled_edge_weight_distribution_metrics(reference_values, generated_values, 
     }
 
 
-def pairwise_edge_weight_distribution_metrics(reference_values_by_pair, generated_values_by_pair, bins=50, value_range=(0.0, 1.0)) -> Dict[str, float]:
+def pairwise_edge_weight_distribution_metrics(reference_values_by_pair, generated_values_by_pair, bins=10, value_range=(0.0, 1.0)) -> Dict[str, float]:
     scores = {
         "edge_weight_pairavg_ks": [],
         "edge_weight_pairavg_wasserstein": [],
         "edge_weight_pairavg_hist_tvd": [],
         "edge_weight_pairavg_hist_js": [],
     }
+    sample_counts = []
 
     for key in set(reference_values_by_pair.keys()).union(generated_values_by_pair.keys()):
         ref = np.asarray(reference_values_by_pair.get(key, []), dtype=float).reshape(-1)
@@ -91,6 +92,9 @@ def pairwise_edge_weight_distribution_metrics(reference_values_by_pair, generate
         if ref.size == 0 or gen.size == 0:
             continue
 
+        # Give frequently observed pairs proportionally more influence than
+        # pairs supported by only a handful of reference samples.
+        sample_counts.append(int(ref.size))
         pooled = pooled_edge_weight_distribution_metrics(ref, gen, bins=bins, value_range=value_range)
         scores["edge_weight_pairavg_ks"].append(float(ks_2samp(ref, gen).statistic))
         scores["edge_weight_pairavg_wasserstein"].append(pooled["edge_weight_pooled_wasserstein"])
@@ -99,11 +103,11 @@ def pairwise_edge_weight_distribution_metrics(reference_values_by_pair, generate
 
     result = {"edge_weight_pairavg_count": len(scores["edge_weight_pairavg_wasserstein"])}
     for key, values in scores.items():
-        result[key] = float(np.mean(values)) if values else 0.0
+        result[key] = float(np.average(values, weights=sample_counts)) if values else 0.0
     return result
 
 
-def masked_adjacency_weight_metrics(gt_adj, gen_adj, observed_mask, bins=50):
+def masked_adjacency_weight_metrics(gt_adj, gen_adj, observed_mask, bins=10):
     gt_adj = gt_adj.float().cpu()
     gen_adj = gen_adj.float().cpu()
     observed_mask = observed_mask.bool().cpu()

@@ -24,7 +24,7 @@ class SamplerConfig:
     n_steps: int = 1
     num_nodes: int = 70
     test_graphs: int = 32
-    use_corrector: bool = True
+    use_corrector: bool = False
     predictor: str = "milstein"  # "em", "heun", or "milstein"
     val_use_full_graph: bool = True
     val_keep_isolates: bool = True
@@ -125,7 +125,7 @@ class SDEConfig:
     s_max: float = 1.0
     order: int = 100
     sample_target: Any = False
-    eps_sde: float = 1e-1
+    eps_sde: float = 5e-1
     eps_score: float = 1e-10
 
 
