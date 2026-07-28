@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -15,6 +16,31 @@ from src.visualization.plots import (
 
 MASKED_VARIANT = "mask_during_generation"
 FULL_VARIANT = "full_generation_masked_eval"
+
+
+def save_metrofi_pooled_weights_json(
+    results: Dict[str, Dict[str, Any]],
+    out_path,
+    *,
+    interference_min: float,
+    interference_max: float,
+) -> Path:
+    """Save masked pooled generated edge weights, converted from [0, 1] to dBm."""
+    scale = float(interference_max) - float(interference_min)
+
+    def _weights_dbm(variant: str):
+        values = np.asarray(results[variant]["gen_edge_values"], dtype=np.float64)
+        return (values * scale + float(interference_min)).tolist()
+
+    payload = {
+        "weights_conditional": _weights_dbm(MASKED_VARIANT),
+        "weights_full": _weights_dbm(FULL_VARIANT),
+    }
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(payload, f)
+    return out_path
 
 
 def flatten_masked_eval_metrics(results: Dict[str, Dict[str, Any]]) -> Dict[str, float]:

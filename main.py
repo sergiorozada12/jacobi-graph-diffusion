@@ -13,6 +13,7 @@ from src.metrics.metrofi_eval import (
     flatten_masked_eval_metrics,
     run_metrofi_masked_eval_variants,
     save_metrofi_masked_eval_artifacts,
+    save_metrofi_pooled_weights_json,
     select_metrofi_eval_tensors,
     timestamped_eval_dir,
 )
@@ -671,6 +672,14 @@ def _run_wireless_masked_eval(
     )
     with open(sample_dir / "metrics.json", "w") as f:
         json.dump({"metadata": metadata, "metrics": flat_metrics}, f, indent=2)
+
+    weights_path = save_metrofi_pooled_weights_json(
+        results,
+        Path("samples") / "metrofi_edge_weights.json",
+        interference_min=datamodule.interference_min,
+        interference_max=datamodule.interference_max,
+    )
+    log_success(f"Saved pooled MetroFi edge weights in dBm to {weights_path}")
 
     save_metrofi_masked_eval_artifacts(
         results,
