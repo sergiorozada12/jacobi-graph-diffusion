@@ -1,0 +1,19 @@
+{
+  "model": "conditional + PE + nosf",
+  "entrypoint": "metrofi_cond",
+  "checkpoint": "checkpoints/metrofi_cond_pe_nosf_epoch999.ckpt",
+  "split": "test",
+  "graphs": 943,
+  "uses_coordinates": true,
+  "uses_true_mask": true,
+  "node_pe": true,
+  "use_sampled_features": false,
+  "metrics": {
+    "mse": 0.020593931898474693,
+    "mae": 0.10495132207870483,
+    "pooled_wasserstein": 0.01866685528862612,
+    "pooled_js": 0.021905345786267044,
+    "pair_ks": 0.5536974968821551,
+    "pair_wasserstein": 0.06497116797702841
+  }
+}

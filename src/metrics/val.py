@@ -1638,11 +1638,12 @@ class WirelessSamplingMetrics:
         self.test_graphs = datamodule.test_graphs
 
         self.test_size_support, self.test_size_probs = self._graph_size_distribution(self.test_graphs)
-        self.rng = np.random.default_rng()
+        general_cfg = getattr(datamodule.config, "general", None)
+        self.seed = int(getattr(general_cfg, "seed", 0))
+        self.rng = np.random.default_rng(self.seed)
 
     def reset(self) -> None:
-        # No mutable state to reset.
-        return
+        self.rng = np.random.default_rng(self.seed)
 
     def forward(
         self,

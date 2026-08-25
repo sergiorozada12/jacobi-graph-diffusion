@@ -49,6 +49,7 @@ class DiffusionBaseModule(pl.LightningModule):
         self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
         self.conditional = bool(getattr(cfg.model, "conditional", False))
         self.condition_dim = int(getattr(cfg.model, "condition_dim", 3))
+        self.use_location_condition = bool(getattr(cfg.model, "use_location_condition", True))
         self.condition_dropout_prob = float(getattr(cfg.train, "condition_dropout_prob", 0.0))
         self.use_positional_encoding = bool(getattr(cfg.model, "positional_encoding", False))
         self.positional_encoding_dim = int(getattr(cfg.model, "positional_encoding_dim", 0))
@@ -164,7 +165,11 @@ class DiffusionBaseModule(pl.LightningModule):
     def on_train_start(self):
         if self.use_ema and self.ema_model is not None:
             self.ema_model.to(self.device)
-            self.ema_model.load_state_dict(self.model.state_dict())
+            # Lightning restores both model and EMA weights before this hook.
+            # Only initialize EMA on a fresh run; otherwise a resumed run would
+            # silently discard the EMA state saved in the checkpoint.
+            if self.global_step == 0:
+                self.ema_model.load_state_dict(self.model.state_dict())
 
     def _sample_time(self, batch_size):
         schedule = self.time_schedule_steps.to(self.device)
@@ -210,7 +215,7 @@ class DiffusionBaseModule(pl.LightningModule):
         return model(X, E, y, flags)
 
     def _append_condition(self, y: torch.Tensor, coords: Optional[torch.Tensor], batch_size: int, *, dropout: bool) -> torch.Tensor:
-        if not self.conditional:
+        if not self.conditional or not self.use_location_condition:
             return y
 
         if coords is None:
@@ -290,7 +295,7 @@ class DiffusionBaseModule(pl.LightningModule):
                 self.sampler,
                 adj.float(),
                 observed_mask.to(adj.device).bool(),
-                condition=coords,
+                condition=coords if self.use_location_condition else None,
                 include_masked_variant=True,
                 include_full_variant=True,
             )

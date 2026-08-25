@@ -1,4 +1,6 @@
 import math
+from pathlib import Path
+
 import torch
 import numpy as np
 from tqdm import trange
@@ -195,6 +197,7 @@ class PCSolver:
             guidance_scale=0.0,
             positional_encoding=False,
             positional_encoding_dim=0,
+            artifact_dir=None,
         ):
         self.sde = sde
         self.shape_adj = shape_adj
@@ -235,6 +238,7 @@ class PCSolver:
         else:
             self.predictor = EulerMaruyamaPredictor(sde, jacobi_score)
         self.corrector = LangevinCorrector(sde, jacobi_score, snr, scale_eps, n_steps, eps_corrector)
+        self.artifact_dir = Path(artifact_dir) if artifact_dir else Path("tests")
 
     def solve(self, flags, condition=None):
         self.predictor.score_fn.set_condition(condition)
@@ -277,7 +281,7 @@ class PCSolver:
             node_size=20,
             edge_width=0.8,
         )
-        save_figure(graph_fig, "tests/history_graphs.png", dpi=150)
+        save_figure(graph_fig, self.artifact_dir / "history_graphs.png", dpi=150)
 
         heatmap_fig = plot_heatmap_snapshots(
             snapshots,
@@ -286,7 +290,7 @@ class PCSolver:
             vmin=0.0,
             vmax=1.0,
         )
-        save_figure(heatmap_fig, "tests/history_heatmaps.png", dpi=150)
+        save_figure(heatmap_fig, self.artifact_dir / "history_heatmaps.png", dpi=150)
 
         self.predictor.score_fn.set_condition(None)
         return ((adj_mean if self.denoise else adj), N * (self.n_steps + 1))

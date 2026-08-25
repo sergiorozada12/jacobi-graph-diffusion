@@ -32,10 +32,11 @@ def save_metrofi_pooled_weights_json(
         values = np.asarray(results[variant]["gen_edge_values"], dtype=np.float64)
         return (values * scale + float(interference_min)).tolist()
 
-    payload = {
-        "weights_conditional": _weights_dbm(MASKED_VARIANT),
-        "weights_full": _weights_dbm(FULL_VARIANT),
-    }
+    payload = {}
+    if MASKED_VARIANT in results:
+        payload["weights_conditional"] = _weights_dbm(MASKED_VARIANT)
+    if FULL_VARIANT in results:
+        payload["weights_full"] = _weights_dbm(FULL_VARIANT)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
@@ -94,6 +95,7 @@ def _sample_adj_variant(
     *,
     condition: Optional[torch.Tensor],
     observed_mask: Optional[torch.Tensor],
+    resume_path=None,
 ):
     old_test_graphs = cfg.sampler.test_graphs
     cfg.sampler.test_graphs = n_graphs
@@ -106,6 +108,7 @@ def _sample_adj_variant(
             keep_zero_weights=True,
             condition=condition,
             fixed_flags=observed_mask,
+            resume_path=resume_path,
         )
     finally:
         cfg.sampler.test_graphs = old_test_graphs
@@ -121,9 +124,16 @@ def run_metrofi_masked_eval_variants(
     condition: Optional[torch.Tensor] = None,
     include_masked_variant: bool = True,
     include_full_variant: bool = True,
+    resume_path=None,
 ) -> Dict[str, Dict[str, Any]]:
     n_graphs = gt_adj.size(0)
     results = {}
+
+    def variant_resume_path(variant):
+        if resume_path is None:
+            return None
+        path = Path(resume_path)
+        return path.with_name(f"{path.stem}_{variant}{path.suffix}")
 
     if include_masked_variant:
         graphs, fig, gen_adj = _sample_adj_variant(
@@ -132,6 +142,7 @@ def run_metrofi_masked_eval_variants(
             n_graphs,
             condition=condition,
             observed_mask=observed_mask,
+            resume_path=variant_resume_path(MASKED_VARIANT),
         )
         metrics, gt_edge_values, gen_edge_values = masked_adjacency_weight_metrics(
             gt_adj,
@@ -154,6 +165,7 @@ def run_metrofi_masked_eval_variants(
             n_graphs,
             condition=condition,
             observed_mask=None,
+            resume_path=variant_resume_path(FULL_VARIANT),
         )
         metrics, gt_edge_values, gen_edge_values = masked_adjacency_weight_metrics(
             gt_adj,

@@ -109,37 +109,29 @@ def load_model_components(model_name):
         from src.metrics.val import PlanarSamplingMetrics as MetricsClass
         from src.dataset.spectre import SpectreDatasetModule as DatasetClass
         wandb_name = "planar"
-    elif model_name in {"metrofi", "metrofi_uncond"}:
-        from configs.config_metrofi import MainConfig
-        from src.metrics.val import WirelessSamplingMetrics as MetricsClass
-        from src.dataset.wireless import WirelessDatasetModule as DatasetClass
-        wandb_name = "metrofi-uncond"
     elif model_name == "metrofi_cond":
         from configs.config_metrofi_cond import MainConfig
         from src.metrics.val import WirelessSamplingMetrics as MetricsClass
         from src.dataset.wireless import WirelessDatasetModule as DatasetClass
         wandb_name = "metrofi-cond"
-    elif model_name == "metrofi_debug":
-        from configs.config_metrofi_debug import MainConfig
+    elif model_name == "metrofi_uncond":
+        from configs.config_metrofi_uncond import MainConfig
         from src.metrics.val import WirelessSamplingMetrics as MetricsClass
         from src.dataset.wireless import WirelessDatasetModule as DatasetClass
-        wandb_name = "metrofi-debug"
+        wandb_name = "metrofi-uncond-pe-nosf"
     else:
         raise ValueError(f"Unknown model name: {model_name}")
     return MainConfig, MetricsClass, DatasetClass, wandb_name
 
 def apply_metrofi_conditional_config(cfg, model_name):
-    if model_name not in {"metrofi", "metrofi_uncond", "metrofi_cond", "metrofi_debug"}:
+    if model_name not in {"metrofi_cond", "metrofi_uncond"}:
         return
 
-    if not getattr(cfg.model, "conditional", False):
-        cfg.model.positional_encoding = False
-        return
-
-    cfg.model.positional_encoding = True
     input_dims = dict(cfg.model.input_dims)
-    input_dims["y"] = int(input_dims["y"]) + int(cfg.model.condition_dim)
-    input_dims["X"] = int(input_dims["X"]) + int(cfg.model.positional_encoding_dim)
+    if getattr(cfg.model, "conditional", False):
+        input_dims["y"] = int(input_dims["y"]) + int(cfg.model.condition_dim)
+    if getattr(cfg.model, "positional_encoding", False):
+        input_dims["X"] = int(input_dims["X"]) + int(cfg.model.positional_encoding_dim)
     cfg.model.input_dims = input_dims
 
 # Helper functions for generation and evaluation
@@ -574,6 +566,8 @@ def _run_wireless_masked_eval(
     use_ema=None,
     run_name=None,
     condition_mode="true",
+    mask_mode="true",
+    resume_path=None,
 ):
     label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
     dataset = getattr(datamodule, f"{split}_ds")
@@ -591,23 +585,35 @@ def _run_wireless_masked_eval(
         log_warning(f"Skipping {label} {split} masked eval: {exc}")
         return None
 
+    use_location_condition = bool(getattr(cfg.model, "use_location_condition", True))
     if getattr(cfg.model, "conditional", False):
         if coords is None:
             log_warning(f"Skipping conditional {split} masked eval: dataset has no coordinates.")
             return None
-        coords = apply_condition_mode(coords, rng, condition_mode)
+        condition = apply_condition_mode(coords, rng, condition_mode) if use_location_condition else None
     else:
-        coords = None
+        condition = None
         condition_mode = "none"
+
+    mask_mode = str(mask_mode).lower()
+    if mask_mode == "true":
+        include_masked_variant, include_full_variant = True, False
+    elif mask_mode == "full":
+        include_masked_variant, include_full_variant = False, True
+    elif mask_mode == "both":
+        include_masked_variant, include_full_variant = True, True
+    else:
+        raise ValueError(f"Unknown conditional eval mask mode: {mask_mode}")
 
     results = run_metrofi_masked_eval_variants(
         cfg,
         sampler,
         gt_adj,
         observed_mask,
-        condition=coords,
-        include_masked_variant=True,
-        include_full_variant=True,
+        condition=condition,
+        include_masked_variant=include_masked_variant,
+        include_full_variant=include_full_variant,
+        resume_path=resume_path,
     )
 
     guidance = float(getattr(cfg.sampler, "guidance_scale", 0.0))
@@ -630,6 +636,8 @@ def _run_wireless_masked_eval(
         "use_ema": bool(use_ema) if use_ema is not None else None,
         "guidance": guidance,
         "condition_mode": condition_mode,
+        "mask_mode": mask_mode,
+        "use_location_condition": use_location_condition,
         "predictor": str(getattr(cfg.sampler, "predictor", "")),
         "eps_time": float(getattr(cfg.sampler, "eps_time", 0.0)),
         "snr": float(getattr(cfg.sampler, "snr", 0.0)),
@@ -689,7 +697,6 @@ def _run_wireless_masked_eval(
         matrix_size=cfg.data.max_node_num,
         title_prefix=f"metrofi {label} {split}",
     )
-
     return results
 
 
@@ -699,7 +706,7 @@ def _run_wireless_conditional_eval(*args, **kwargs):
 def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
     from src.models.transformer_model import GraphTransformer
     from src.sample.sampler import Sampler
-    from src.dataset.utils import compute_reference_metrics
+    from src.dataset.utils import compute_reference_metrics, save_graphs_pickle
     from src.metrics.abstract import compute_ratios
     from src.utils import adjs_to_graphs
     from src.visualization.plots import (
@@ -708,6 +715,9 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
         plot_weighted_adj_and_graph,
         save_figure,
     )
+
+    if args.load_graphs_path is not None:
+        raise ValueError("--load-graphs-path is not yet supported for MetroFi evaluation.")
 
     cfg.train.training_mode = "weighted"
     cfg.model.output_dims = dict(cfg.model.score_output_dims)
@@ -766,7 +776,8 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
     model = model.to(cfg.general.device)
     model.eval()
 
-    sampler = Sampler(cfg=cfg, model=model, node_dist=None)
+    artifact_dir = Path(getattr(args, "wireless_output_dir", None) or "samples")
+    sampler = Sampler(cfg=cfg, model=model, node_dist=None, artifact_dir=artifact_dir)
 
     cond_split = getattr(args, "conditional_eval_split", "test")
     if getattr(args, "conditional_eval_only", False):
@@ -779,9 +790,22 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             use_ema=(not args.no_ema) and cfg.train.use_ema,
             run_name=getattr(args, "conditional_eval_name", None),
             condition_mode=getattr(args, "conditional_eval_condition_mode", "true"),
+            mask_mode=getattr(args, "conditional_eval_mask_mode", "true"),
+            resume_path=getattr(args, "conditional_eval_resume_path", None),
         )
         label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
         _print_wireless_masked_eval_metrics(label, cond_split, masked_eval_results)
+        if args.json_out and masked_eval_results is not None:
+            out_path = Path(args.json_out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w") as f:
+                json.dump({
+                    "dataset_name": cfg.data.data,
+                    "split": cond_split,
+                    "model": label,
+                    "metrics": flatten_masked_eval_metrics(masked_eval_results),
+                }, f, indent=2)
+            log_success(f"Results saved to {out_path}")
         return
 
     samples, _, adj_samples = sampler.sample(
@@ -802,7 +826,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
         keep_zero_weights=True,
         nodelist=list(range(adj_rescaled.shape[-1])),
     )
-
+    graph_list = _validate_expected_num_graphs(graph_list, args.expected_num_graphs)
     max_weight_norm = 0.0
     max_weight_raw = -float("inf")
     total_edges = 0
@@ -818,8 +842,11 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             total_edges += 1
 
     log_success(f"Rescaled {total_edges} edges to range [{interference_min:.4f}, {interference_max:.4f}]")
+    if args.save_graphs_path:
+        save_graphs_pickle(graph_list, args.save_graphs_path)
+        log_success(f"Saved generated graphs to {args.save_graphs_path}")
 
-    save_path = Path("samples/wireless.png")
+    save_path = artifact_dir / "wireless.png"
     save_path.parent.mkdir(parents=True, exist_ok=True)
     if len(graph_list) > 0:
         first_graph_obj = graph_list[0]
@@ -860,6 +887,20 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             for k, v in sorted(ratios.items()):
                 print_row(k, v)
 
+        if args.json_out:
+            out_path = Path(args.json_out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "dataset_name": cfg.data.data,
+                "checkpoint": str(checkpoint_path),
+                "num_graphs": len(graph_list),
+                "metrics": metrics_out,
+                "metrics_ratio": ratios,
+            }
+            with open(out_path, "w") as f:
+                json.dump(payload, f, indent=2)
+            log_success(f"Results saved to {out_path}")
+
         masked_eval_results = _run_wireless_masked_eval(
             cfg,
             datamodule,
@@ -869,6 +910,8 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             use_ema=(not args.no_ema) and cfg.train.use_ema,
             run_name=getattr(args, "conditional_eval_name", None),
             condition_mode=getattr(args, "conditional_eval_condition_mode", "true"),
+            mask_mode=getattr(args, "conditional_eval_mask_mode", "true"),
+            resume_path=getattr(args, "conditional_eval_resume_path", None),
         )
         label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
         _print_wireless_masked_eval_metrics(label, cond_split, masked_eval_results)
@@ -934,7 +977,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
                     snapshots, max_value = fallback_snapshots, fallback_max
             return snapshots, max_value
 
-        heatmap_snapshots, vmax = build_weighted_snapshots(samples, cfg.data.max_node_num)
+        heatmap_snapshots, vmax = build_weighted_snapshots(graph_list, cfg.data.max_node_num)
         if heatmap_snapshots:
             grid_cols = min(5, len(heatmap_snapshots))
             grid_rows = math.ceil(len(heatmap_snapshots) / grid_cols)
@@ -987,7 +1030,7 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["pa", "sbm", "sbm_2comms", "tree", "tree_graphon", "planar", "metrofi", "metrofi_uncond", "metrofi_cond", "metrofi_debug"],
+        choices=["pa", "sbm", "sbm_2comms", "tree", "tree_graphon", "planar", "metrofi_cond", "metrofi_uncond"],
         help="Specific diffusion model/config type to use."
     )
     parent_parser.add_argument("--seed", type=int, default=None, help="Override default config seed.")
@@ -1007,6 +1050,7 @@ def main():
     gen_parser.add_argument("--load-graphs-path", type=str, default=None, help="Optional path to a saved graphs pickle to evaluate instead of generating.")
     gen_parser.add_argument("--expected-num-graphs", type=int, default=None, help="If set, raise an error unless loaded/generated graph list size matches this.")
     gen_parser.add_argument("--json-out", type=str, default=None, help="Save final evaluation metrics to this JSON file.")
+    gen_parser.add_argument("--wireless-output-dir", type=str, default=None, help="Directory for MetroFi plots and sampler history artifacts.")
     gen_parser.add_argument("--kernel", type=str, default="emd", help="Kernel name (default: 'emd').")
     gen_parser.add_argument("--n-folds", type=int, default=1, help="Number of folds to evaluate.")
     gen_parser.add_argument("--min-nodes", type=int, default=None, help="Minimum number of nodes to sample.")
@@ -1027,7 +1071,9 @@ def main():
     gen_parser.add_argument("--conditional-eval-graphs", type=int, default=None, help="Number of graphs for conditional masked MSE/MAE.")
     gen_parser.add_argument("--conditional-eval-name", type=str, default=None, help="Readable output folder prefix for conditional eval artifacts.")
     gen_parser.add_argument("--conditional-eval-condition-mode", choices=["true", "shuffled", "zero"], default="true", help="Coordinate condition ablation mode for MetroFi conditional eval.")
-    gen_parser.add_argument("--conditional-eval-only", action="store_true", help="Only run MetroFi masked eval variants and skip full sampling metrics.")
+    gen_parser.add_argument("--conditional-eval-mask-mode", choices=["true", "full", "both"], default="true", help="Generation mask variant for MetroFi paired evaluation.")
+    gen_parser.add_argument("--conditional-eval-only", action="store_true", help="Only run MetroFi masked evaluation and skip full sampling metrics.")
+    gen_parser.add_argument("--conditional-eval-resume-path", type=str, default=None, help="Optional batch-level resume file for long paired evaluations.")
     gen_parser.add_argument("--no-ema", action="store_true", help="Disable loading EMA checkpoint weights.")
     gen_parser.add_argument("--skip-size-ref", action="store_true", help="Skip loading size-specific reference metrics.")
     gen_parser.add_argument("--no-average-ratio-to-size-ref", dest="no_average_ratio_to_size_ref", action="store_true", help="Skip calculating size-matched reference ratios.")

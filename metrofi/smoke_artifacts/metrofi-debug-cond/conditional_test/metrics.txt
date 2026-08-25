@@ -1,2 +1,0 @@
-split=test seed=17 graphs=5 mse=0.16020918 mae=0.34121346
-split=test seed=17 graphs=5 mse=0.31765693 mae=0.48221654

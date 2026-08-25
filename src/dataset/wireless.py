@@ -39,6 +39,9 @@ class WirelessDatasetModule(pl.LightningDataModule):
         self.test_ds = None
         self.metadata: Dict[str, Any] = {}
         self.conditional = bool(getattr(config.model, "conditional", False))
+        self.include_coordinates = self.conditional or bool(
+            getattr(config.data, "include_coordinates", False)
+        )
         self.coord_min = None
         self.coord_scale = None
 
@@ -63,7 +66,7 @@ class WirelessDatasetModule(pl.LightningDataModule):
 
         all_graphs = self.train_graphs + self.val_graphs + self.test_graphs
         self.interference_range = self._interference_range(all_graphs)
-        if self.conditional:
+        if self.include_coordinates:
             self._setup_coord_normalizer(all_graphs)
         if self.interference_range is not None:
             vmin, vmax = self.interference_range
@@ -92,7 +95,7 @@ class WirelessDatasetModule(pl.LightningDataModule):
             self.max_feat_num,
             mask_attr="observed",
         )
-        if not self.conditional:
+        if not self.include_coordinates:
             return dataset
 
         coords = self._graph_coords_tensor(graphs)

@@ -49,6 +49,7 @@ class DataConfig:
     max_train_graphs: Optional[int] = None
     max_val_graphs: Optional[int] = None
     max_test_graphs: Optional[int] = None
+    include_coordinates: bool = True
 
 
 @dataclass
@@ -58,6 +59,7 @@ class ModelConfig:
     rrwp_steps: int = 20
     use_sampled_features: bool = False
     conditional: bool = True
+    use_location_condition: bool = True
     condition_dim: int = 3  # normalized lat/lon plus condition-present flag
     positional_encoding: bool = True
     positional_encoding_dim: int = 8

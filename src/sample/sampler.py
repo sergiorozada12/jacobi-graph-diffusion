@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 import torch
 
 from src.sde.sde import JacobiSDE
@@ -8,7 +9,7 @@ from src.visualization.plots import plot_graph_grid, plot_weighted_adj_and_graph
 
 
 class Sampler:
-    def __init__(self, cfg, model, node_dist=None):
+    def __init__(self, cfg, model, node_dist=None, artifact_dir=None):
         self.cfg = cfg
         self.device = torch.device(cfg.general.device)
         self.max_num_nodes = cfg.data.max_node_num
@@ -18,6 +19,7 @@ class Sampler:
         self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
         self.model = model.to(self.device)
         self.sde = self._get_sde(self.cfg.sde)
+        self.artifact_dir = artifact_dir
         self.solver = self._get_solver()
 
         self.node_dist = node_dist
@@ -62,6 +64,7 @@ class Sampler:
             guidance_scale=getattr(self.cfg.sampler, "guidance_scale", 0.0),
             positional_encoding=getattr(self.cfg.model, "positional_encoding", False),
             positional_encoding_dim=getattr(self.cfg.model, "positional_encoding_dim", 0),
+            artifact_dir=self.artifact_dir,
         )
 
     def set_model(self, model):
@@ -114,6 +117,7 @@ class Sampler:
         keep_zero_weights: bool = False,
         condition=None,
         fixed_flags=None,
+        resume_path=None,
     ):
         if condition is not None and fixed_flags is not None and condition.size(0) != fixed_flags.size(0):
             raise ValueError("condition and fixed_flags must contain the same number of graphs.")
@@ -128,7 +132,35 @@ class Sampler:
         first_adj = None
         first_flags = None
         collected_adjs = []
-        for round_idx in range(num_rounds):
+        start_round = 0
+        resume_file = Path(resume_path) if resume_path is not None else None
+        if resume_file is not None and resume_file.exists():
+            state = torch.load(resume_file, map_location="cpu")
+            if int(state["total_samples"]) != int(total_samples):
+                raise ValueError("Resume state sample count does not match this evaluation.")
+            saved_flags = state.get("fixed_flags")
+            expected_flags = fixed_flags.detach().cpu() if fixed_flags is not None else None
+            if saved_flags is not None and not torch.equal(saved_flags, expected_flags):
+                raise ValueError("Resume state node masks do not match this evaluation.")
+            saved_condition = state.get("condition")
+            expected_condition = condition.detach().cpu() if condition is not None else None
+            if saved_condition is not None and not torch.equal(saved_condition, expected_condition):
+                raise ValueError("Resume state conditions do not match this evaluation.")
+            restored = state["adjs"]
+            collected_adjs.append(restored)
+            start_round = math.ceil(restored.size(0) / self.cfg.data.batch_size)
+            torch.set_rng_state(state["torch_rng_state"])
+            if self.device.type == "cuda" and state.get("cuda_rng_state") is not None:
+                torch.cuda.set_rng_state(state["cuda_rng_state"], self.device)
+            first_adj = restored[0]
+            if fixed_flags is not None:
+                first_flags = fixed_flags[0].detach().cpu()
+            generated.extend(adjs_to_graphs(
+                restored, is_cuda=False, keep_isolates=keep_isolates,
+                nodelist=nodelist, keep_zero_weights=keep_zero_weights,
+            ))
+
+        for round_idx in range(start_round, num_rounds):
             start = round_idx * self.cfg.data.batch_size
             end = min(start + self.cfg.data.batch_size, total_samples)
             round_batch_size = end - start
@@ -156,6 +188,19 @@ class Sampler:
                 keep_zero_weights=keep_zero_weights,
             )
             generated.extend(graphs)
+            if resume_file is not None:
+                resume_file.parent.mkdir(parents=True, exist_ok=True)
+                state = {
+                    "total_samples": total_samples,
+                    "adjs": torch.cat(collected_adjs, dim=0),
+                    "fixed_flags": fixed_flags.detach().cpu() if fixed_flags is not None else None,
+                    "condition": condition.detach().cpu() if condition is not None else None,
+                    "torch_rng_state": torch.get_rng_state(),
+                    "cuda_rng_state": torch.cuda.get_rng_state(self.device) if self.device.type == "cuda" else None,
+                }
+                tmp_file = resume_file.with_name(resume_file.name + ".tmp")
+                torch.save(state, tmp_file)
+                tmp_file.replace(resume_file)
             #for graph in graphs:
             #    largest_cc = max(nx.connected_components(graph), key=len)
             #    generated.append(graph.subgraph(largest_cc).copy())
