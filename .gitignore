@@ -14,6 +14,8 @@ nohup*
 *.sh
 sweep*
 results*
+benchmarks/*
+external_methods
 
 # C extensions
 *.so

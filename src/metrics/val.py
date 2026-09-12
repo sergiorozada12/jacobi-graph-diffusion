@@ -1204,10 +1204,14 @@ class SpectreSamplingMetrics(nn.Module):
         self.metrics_list = metrics_list
 
         # Store for wavelet computaiton
-        self.val_ref_eigvals, self.val_ref_eigvecs = compute_list_eigh(self.val_graphs)
-        self.test_ref_eigvals, self.test_ref_eigvecs = compute_list_eigh(
-            self.test_graphs
-        )
+        if "wavelet" in self.metrics_list:
+            self.val_ref_eigvals, self.val_ref_eigvecs = compute_list_eigh(self.val_graphs)
+            self.test_ref_eigvals, self.test_ref_eigvecs = compute_list_eigh(
+                self.test_graphs
+            )
+        else:
+            self.val_ref_eigvals = self.val_ref_eigvecs = None
+            self.test_ref_eigvals = self.test_ref_eigvecs = None
         self.train_size_range = self._infer_train_size_range()
 
     def _infer_train_size_range(self):
@@ -1363,6 +1367,27 @@ class SpectreSamplingMetrics(nn.Module):
                 for key, value in tree_metrics.items():
                     wandb.run.summary[key] = value
 
+        if "d_regular" in self.metrics_list:
+            d_regular_acc = float(np.mean([
+                graph.number_of_nodes() > 4
+                and all(degree == 4 for _, degree in graph.degree())
+                for graph in networkx_graphs
+            ])) if networkx_graphs else 0.0
+            total_nodes = sum(graph.number_of_nodes() for graph in networkx_graphs)
+            degree_four_nodes = sum(
+                degree == 4
+                for graph in networkx_graphs
+                for _, degree in graph.degree()
+            )
+            d_regular_node_acc = (
+                float(degree_four_nodes / total_nodes) if total_nodes else 0.0
+            )
+            to_log["4_regular_acc"] = d_regular_acc
+            to_log["4_regular_node_acc"] = d_regular_node_acc
+            if wandb.run:
+                wandb.run.summary["4_regular_acc"] = d_regular_acc
+                wandb.run.summary["4_regular_node_acc"] = d_regular_node_acc
+
         if (
             "sbm" in self.metrics_list
             or "planar" in self.metrics_list
@@ -1379,6 +1404,10 @@ class SpectreSamplingMetrics(nn.Module):
                 validity_func = nx.is_tree
             elif "pa" in self.metrics_list:
                 validity_func = is_pa_graph
+            elif "d_regular" in self.metrics_list:
+                validity_func = lambda graph: graph.number_of_nodes() > 4 and all(
+                    degree == 4 for _, degree in graph.degree()
+                )
             else:
                 validity_func = None
             (
@@ -1402,10 +1431,15 @@ class SpectreSamplingMetrics(nn.Module):
                 }
             )
 
+        ratio_metric_keys = [
+            key
+            for key in ["degree", "clustering", "orbit", "spectre", "wavelet"]
+            if key in to_log
+        ]
         ratios = compute_ratios(
             gen_metrics=to_log,
             ref_metrics=ref_metrics["test"] if test else ref_metrics["val"],
-            metrics_keys=["degree", "clustering", "orbit", "spectre", "wavelet"],
+            metrics_keys=ratio_metric_keys,
         )
         to_log.update(ratios)
         if extra_ref_metrics:
@@ -1483,6 +1517,15 @@ class TreeSamplingMetrics(SpectreSamplingMetrics):
                 "wavelet",
                 "tree",
             ],
+        )
+
+
+class DRegularSamplingMetrics(SpectreSamplingMetrics):
+    def __init__(self, datamodule):
+        super().__init__(
+            datamodule=datamodule,
+            compute_emd=False,
+            metrics_list=["d_regular"],
         )
 
 

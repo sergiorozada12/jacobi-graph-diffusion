@@ -63,6 +63,11 @@ def load_model_components(model_name):
         from src.metrics.val import TreeSamplingMetrics as MetricsClass
         from src.dataset.spectre import SpectreDatasetModule as DatasetClass
         wandb_name = "tree"
+    elif model_name == "d_regular":
+        from configs.config_d_regular import MainConfig
+        from src.metrics.val import DRegularSamplingMetrics as MetricsClass
+        from src.dataset.spectre import SpectreDatasetModule as DatasetClass
+        wandb_name = "d-regular"
     elif model_name == "tree_graphon":
         from configs.config_tree_graphon import MainConfig
         from src.metrics.val import TreeSamplingMetrics as MetricsClass
@@ -469,6 +474,8 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             accuracy_key = "sbm_acc"
         elif "tree_acc" in metrics:
             accuracy_key = "tree_acc"
+        elif "4_regular_acc" in metrics:
+            accuracy_key = "4_regular_acc"
 
         entry = {
             "size": _resolve_size_summary(samples, args, cfg),
@@ -773,7 +780,7 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["pa", "sbm", "sbm_2comms", "tree", "tree_graphon", "planar", "metrofi"],
+        choices=["pa", "sbm", "sbm_2comms", "tree", "tree_graphon", "d_regular", "planar", "metrofi"],
         help="Specific diffusion model/config type to use."
     )
     parent_parser.add_argument("--seed", type=int, default=None, help="Override default config seed.")
@@ -797,6 +804,7 @@ def main():
     gen_parser.add_argument("--min-nodes", type=int, default=None, help="Minimum number of nodes to sample.")
     gen_parser.add_argument("--max-nodes", type=int, default=None, help="Maximum number of nodes to sample.")
     gen_parser.add_argument("--num-samples", type=int, default=None, help="Number of samples to generate (overrides cfg.sampler.test_graphs).")
+    gen_parser.add_argument("--sampling-batch-size", type=int, default=None, help="Sampling batch size; use the sample count to generate in one pass.")
     gen_parser.add_argument("--no-ema", action="store_true", help="Disable loading EMA checkpoint weights.")
     gen_parser.add_argument("--skip-size-ref", action="store_true", help="Skip loading size-specific reference metrics.")
     gen_parser.add_argument("--no-average-ratio-to-size-ref", dest="no_average_ratio_to_size_ref", action="store_true", help="Skip calculating size-matched reference ratios.")
@@ -822,6 +830,10 @@ def main():
         cfg.general.device = args.device
     if args.mode == "gen" and args.num_samples is not None:
         cfg.sampler.test_graphs = args.num_samples
+    if args.mode == "gen" and args.sampling_batch_size is not None:
+        if args.sampling_batch_size < 1:
+            raise ValueError("--sampling-batch-size must be at least 1.")
+        cfg.data.batch_size = args.sampling_batch_size
 
     # Global seeding
     _ = pl.seed_everything(cfg.general.seed, workers=True)

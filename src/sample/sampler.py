@@ -136,6 +136,7 @@ class Sampler:
             #for graph in graphs:
             #    largest_cc = max(nx.connected_components(graph), key=len)
             #    generated.append(graph.subgraph(largest_cc).copy())
+        generated = generated[: self.cfg.sampler.test_graphs]
         if self.score_mode == "weighted" and first_adj is not None:
             fig = plot_weighted_adj_and_graph(
                 first_adj,
@@ -145,6 +146,6 @@ class Sampler:
         else:
             fig = self.plot_sampled_graphs(generated)
         if return_adjs:
-            adjs_stacked = torch.cat(collected_adjs, dim=0)
+            adjs_stacked = torch.cat(collected_adjs, dim=0)[: self.cfg.sampler.test_graphs]
             return generated, fig, adjs_stacked
         return generated, fig
