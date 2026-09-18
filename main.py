@@ -1066,6 +1066,7 @@ def main():
     gen_parser.add_argument("--sampler-noise-removal", action=argparse.BooleanOptionalAction, default=None, help="Override final denoising/noise-removal flag.")
     gen_parser.add_argument("--sampler-use-corrector", action=argparse.BooleanOptionalAction, default=None, help="Override Langevin corrector usage.")
     gen_parser.add_argument("--sde-num-scales", type=int, default=None, help="Override number of reverse diffusion scales.")
+    gen_parser.add_argument("--sde-eps-sde", type=float, default=None, help="Override the SDE numerical epsilon.")
     gen_parser.add_argument("--model-use-sampled-features", action=argparse.BooleanOptionalAction, default=None, help="Override whether feature extraction uses sampled edges during generation.")
     gen_parser.add_argument("--conditional-eval-split", choices=["val", "test"], default="test", help="Split for conditional masked MSE/MAE.")
     gen_parser.add_argument("--conditional-eval-graphs", type=int, default=None, help="Number of graphs for conditional masked MSE/MAE.")
@@ -1121,6 +1122,8 @@ def main():
         cfg.sampler.use_corrector = args.sampler_use_corrector
     if args.mode == "gen" and getattr(args, "sde_num_scales", None) is not None:
         cfg.sde.num_scales = args.sde_num_scales
+    if args.mode == "gen" and getattr(args, "sde_eps_sde", None) is not None:
+        cfg.sde.eps_sde = args.sde_eps_sde
     if args.mode == "gen" and getattr(args, "model_use_sampled_features", None) is not None:
         cfg.model.use_sampled_features = args.model_use_sampled_features
     if args.mode == "gen" and getattr(args, "conditional_eval_graphs", None) is not None:
