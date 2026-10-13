@@ -28,16 +28,16 @@ def print_subheader(title):
     print(f"\n--- {title} ---")
 
 def log_info(msg):
-    print(f"🔹 [INFO] {msg}")
+    print(f"[INFO] {msg}")
 
 def log_success(msg):
-    print(f"🟢 [SUCCESS] {msg}")
+    print(f"[SUCCESS] {msg}")
 
 def log_warning(msg):
-    print(f"⚠️ [WARNING] {msg}")
+    print(f"[WARNING] {msg}")
 
 def log_error(msg):
-    print(f"🔴 [ERROR] {msg}")
+    print(f"[ERROR] {msg}")
 
 def print_row(label, val, ref=None):
     if ref is not None:
@@ -61,6 +61,77 @@ def experiment_name(cfg):
         suffix = "cond" if getattr(cfg.model, "conditional", False) else "uncond"
         return f"{data_name}-{suffix}"
     return data_name
+
+
+def log_run_summary(mode, model_name, cfg):
+    print_header(f"{mode} run")
+    print_row("Model", model_name)
+    print_row("Dataset", cfg.data.data)
+    print_row("Device", cfg.general.device)
+    print_row("Batch size", cfg.data.batch_size)
+    print_row("Seed", cfg.general.seed)
+    if mode == "TRAIN":
+        print_row("Epochs", cfg.train.num_epochs)
+        print_row("W&B logging", "enabled" if cfg.general.use_wandb else "disabled")
+    if mode in {"GEN", "TEST"}:
+        print_row("Samples", cfg.sampler.test_graphs)
+        print_row("Sampling batch size", getattr(cfg.sampler, "batch_size", cfg.data.batch_size))
+
+
+def trainer_hardware(device):
+    device = str(device).lower()
+    if device == "cpu":
+        return "cpu", 1
+    if device == "mps":
+        return "mps", 1
+    if device.startswith("cuda"):
+        if ":" in device:
+            _, index = device.split(":", maxsplit=1)
+            if not index.isdigit():
+                raise ValueError(f"Invalid CUDA device '{device}'. Expected 'cuda' or 'cuda:<index>'.")
+            return "gpu", [int(index)]
+        return "gpu", "auto"
+    raise ValueError(f"Unsupported device '{device}'. Use cpu, mps, cuda, or cuda:<index>.")
+
+
+def size_sort_key(entry):
+    size = entry.get("size")
+    if size is None:
+        return (2, 0, 0)
+    if isinstance(size, (list, tuple)):
+        values = tuple(float(value) for value in size)
+        return (1, *values)
+    return (0, float(size), 0)
+
+
+def validate_cli_args(parser, args):
+    positive_values = {
+        "--batch-size": getattr(args, "batch_size", None),
+        "--num-samples": getattr(args, "num_samples", None),
+        "--sampling-batch-size": getattr(args, "sampling_batch_size", None),
+        "--expected-num-graphs": getattr(args, "expected_num_graphs", None),
+        "--n-folds": getattr(args, "n_folds", None),
+        "--conditional-eval-graphs": getattr(args, "conditional_eval_graphs", None),
+        "--sampler-n-steps": getattr(args, "sampler_n_steps", None),
+        "--sde-num-scales": getattr(args, "sde_num_scales", None),
+    }
+    for option, value in positive_values.items():
+        if value is not None and value < 1:
+            parser.error(f"{option} must be at least 1")
+
+    for option in ("eps_sde", "eps_time"):
+        value = getattr(args, option, None)
+        if value is not None and value <= 0:
+            parser.error(f"--{option.replace('_', '-')} must be greater than 0")
+
+    min_nodes = getattr(args, "min_nodes", None)
+    max_nodes = getattr(args, "max_nodes", None)
+    if args.mode in {"gen", "test"} and (min_nodes is None) != (max_nodes is None):
+        parser.error("--min-nodes and --max-nodes must be provided together")
+    if min_nodes is not None and min_nodes < 1:
+        parser.error("--min-nodes must be at least 1")
+    if min_nodes is not None and max_nodes is not None and max_nodes < min_nodes:
+        parser.error("--max-nodes must be greater than or equal to --min-nodes")
 
 
 def load_checkpoint_state_dict(path, *, use_ema=True):
@@ -99,11 +170,6 @@ def load_model_components(model_name):
         from src.metrics.val import TreeSamplingMetrics as MetricsClass
         from src.dataset.spectre import SpectreDatasetModule as DatasetClass
         wandb_name = "tree-graphon"
-    elif model_name == "planar":
-        from configs.config_planar import MainConfig
-        from src.metrics.val import PlanarSamplingMetrics as MetricsClass
-        from src.dataset.spectre import SpectreDatasetModule as DatasetClass
-        wandb_name = "planar"
     elif model_name == "metrofi_cond":
         from configs.config_metrofi_cond import MainConfig
         from src.metrics.val import WirelessSamplingMetrics as MetricsClass
@@ -182,6 +248,12 @@ def _resolve_size_summary(samples, args, cfg):
     return [node_counts[0], node_counts[-1]]
 
 def _evaluate_folds(samples, n_folds, sampling_metrics, ref_metrics, extra_sampling_metrics):
+    if not samples:
+        raise ValueError("Cannot evaluate an empty sample set.")
+    if n_folds > len(samples):
+        raise ValueError(
+            f"--n-folds ({n_folds}) cannot exceed the number of samples ({len(samples)})."
+        )
     fold_size = math.ceil(len(samples) / n_folds)
     fold_metrics = []
     fold_metrics_extra = {}
@@ -215,7 +287,6 @@ def _evaluate_folds(samples, n_folds, sampling_metrics, ref_metrics, extra_sampl
 def run_train(args, cfg, wandb_name, MetricsClass, DatasetClass):
     from pytorch_lightning import Trainer
     from pytorch_lightning.callbacks import ModelCheckpoint
-    from pytorch_lightning.loggers import WandbLogger
     from src.dataset.utils import DistributionNodes, compute_reference_metrics
     from src.train.trainer_graph import DiffusionGraphModule, DiffusionWeightedGraphModule
     from src.train.trainer_score import DiffusionScoreModule
@@ -261,18 +332,24 @@ def run_train(args, cfg, wandb_name, MetricsClass, DatasetClass):
     )
     callbacks.append(checkpoint_callback)
 
-    wandb_run_id = None
-    logger = WandbLogger(
-        project="jacobi-graph-diffusion",
-        name=wandb_name,
-        id=wandb_run_id,
-        resume="must" if wandb_run_id else None,
-    )
+    if cfg.general.use_wandb:
+        from pytorch_lightning.loggers import WandbLogger
+
+        logger = WandbLogger(
+            project="jacobi-graph-diffusion",
+            name=wandb_name,
+        )
+        log_info(f"Weights & Biases logging enabled for run '{wandb_name}'.")
+    else:
+        logger = False
+        log_info("Weights & Biases logging disabled by configuration.")
+
+    accelerator, devices = trainer_hardware(cfg.general.device)
 
     trainer = Trainer(
-        accelerator="auto" if cfg.general.device.startswith("cuda") else "cpu",
-        devices="auto",
-        strategy="ddp_find_unused_parameters_true",
+        accelerator=accelerator,
+        devices=devices,
+        strategy="auto",
         max_epochs=cfg.train.num_epochs,
         check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
         num_sanity_val_steps=getattr(cfg.general, "num_sanity_val_steps", 2),
@@ -282,9 +359,12 @@ def run_train(args, cfg, wandb_name, MetricsClass, DatasetClass):
     )
 
     if ckpt_path.exists():
+        log_info(f"Resuming training from {ckpt_path}.")
         trainer.fit(model, datamodule=datamodule, ckpt_path=str(ckpt_path))
     else:
+        log_info("Starting training from scratch.")
         trainer.fit(model, datamodule=datamodule)
+    log_success(f"Training completed. Checkpoints are available in {ckpt_dir}.")
 
 def run_gen(args, cfg, MetricsClass, DatasetClass, model_name):
     if model_name.startswith("metrofi"):
@@ -375,6 +455,7 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             weight_path,
             use_ema=(not args.no_ema) and cfg.train.use_ema,
         )
+        log_info(f"Loading checkpoint from {weight_path}.")
         model.load_state_dict(state_dict)
         model = model.to(cfg.general.device)
         model.eval()
@@ -394,7 +475,7 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
         samples = _validate_expected_num_graphs(samples, args.expected_num_graphs)
 
     extra_sampling_metrics = None
-    if not args.no_average_ratio_to_size_ref:
+    if not args.skip_size_ref:
         if args.min_nodes is not None and args.max_nodes is not None and args.min_nodes == args.max_nodes:
             try:
                 size_ref_metrics, size_ref_sampling_metrics = load_size_ref_metrics(
@@ -405,8 +486,8 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
                 extra_sampling_metrics = {
                     "size_ref": (size_ref_metrics, size_ref_sampling_metrics)
                 }
-            except Exception as e:
-                log_error(f"Failed to setup node-specific metrics: {e}")
+            except (FileNotFoundError, ValueError) as exc:
+                log_warning(f"Could not set up size-specific metrics: {exc}")
                 extra_sampling_metrics = None
 
     if args.n_folds < 1:
@@ -474,6 +555,7 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             with open(out_path, "w") as f:
                 json.dump(entry, f, indent=2)
+            log_success(f"Results saved to {out_path}")
             return
 
         def get_metrics_dict(m):
@@ -526,8 +608,8 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             with open(out_path, "r") as f:
                 try:
                     data = json.load(f)
-                except Exception as e:
-                    log_warning(f"Warning: could not load existing JSON at {out_path}: {e}")
+                except (OSError, json.JSONDecodeError) as exc:
+                    log_warning(f"Could not load existing JSON at {out_path}: {exc}")
 
         updated = False
         for i, e in enumerate(data.get("entries", [])):
@@ -540,7 +622,7 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
                 data["entries"] = []
             data["entries"].append(entry)
 
-        data["entries"].sort(key=lambda x: x["size"])
+        data["entries"].sort(key=size_sort_key)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as f:
             json.dump(data, f, indent=4)
@@ -748,7 +830,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
     else:
         ema_path = ckpt_dir / "weights_ema.pth"
         weights_path = ckpt_dir / "weights.pth"
-        if ema_path.exists():
+        if (not args.no_ema) and cfg.train.use_ema and ema_path.exists():
             checkpoint_path = ema_path
         elif weights_path.exists():
             checkpoint_path = weights_path
@@ -756,6 +838,9 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             raise FileNotFoundError(
                 f"Could not find checkpoint for '{cfg.data.data}'."
             )
+
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Provided checkpoint does not exist: {checkpoint_path}")
 
     model = GraphTransformer(
         n_layers=cfg.model.n_layers,
@@ -770,6 +855,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
         checkpoint_path,
         use_ema=(not args.no_ema) and cfg.train.use_ema,
     )
+    log_info(f"Loading checkpoint from {checkpoint_path}.")
     model.load_state_dict(state_dict)
     model = model.to(cfg.general.device)
     model.eval()
@@ -858,6 +944,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             vmax=interference_max if interference_scale > 0 else None,
         )
         save_figure(fig, save_path, dpi=300)
+        log_success(f"Saved generated graph plot to {save_path}")
 
     try:
         sampling_metrics = MetricsClass(datamodule)
@@ -939,7 +1026,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             save_figure(hist_fig_sub, save_path.with_name("wireless_edge_weight_hist_subgraphs.png"), dpi=300)
 
         except Exception as exc:
-            log_warning(f"Warning: could not plot histograms: {exc}")
+            log_warning(f"Could not plot histograms: {exc}")
 
         # Adjacency heatmap snapshots plotting helper
         def _collect_snapshots(graphs, max_node_num, max_snapshots, weight_key):
@@ -991,7 +1078,8 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             save_figure(heatmap_fig, save_path.with_name("wireless_weight_heatmaps_full.png"), dpi=300)
 
     except Exception as exc:
-        log_error(f"Warning: could not compute metrics: {exc}")
+        log_error(f"Could not compute MetroFi metrics: {exc}")
+        raise
 
 def run_tune(args, cfg, model_name):
     from configs.config_tune import get_tune_config
@@ -1029,12 +1117,13 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["pa", "sbm_2comms", "tree_graphon", "d_regular", "planar", "metrofi_cond", "metrofi_uncond"],
+        choices=["pa", "sbm_2comms", "tree_graphon", "d_regular", "metrofi_cond", "metrofi_uncond"],
         help="Specific diffusion model/config type to use."
     )
     parent_parser.add_argument("--seed", type=int, default=None, help="Override default config seed.")
     parent_parser.add_argument("--device", type=str, default=None, help="Override general device (e.g. cuda, cpu, cuda:0).")
     parent_parser.add_argument("--batch-size", type=int, default=None, help="Override data batch size.")
+    parent_parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=None, help="Enable or disable Weights & Biases logging.")
 
     parser = argparse.ArgumentParser(description="Unified Jacobi Graph Diffusion Entrypoint")
     subparsers = parser.add_subparsers(dest="mode", required=True, help="Mode to run.")
@@ -1043,23 +1132,27 @@ def main():
     subparsers.add_parser("train", parents=[parent_parser], help="Train the model.")
 
     # Gen subparser
-    gen_parser = subparsers.add_parser("gen", parents=[parent_parser], help="Generate graphs using a checkpoint.")
+    gen_parser = subparsers.add_parser(
+        "gen",
+        aliases=["test"],
+        parents=[parent_parser],
+        help="Generate and evaluate graphs using a checkpoint (alias: test).",
+    )
     gen_parser.add_argument("--checkpoint", "--ckpt-path", type=str, default=None, help="Path to custom weights file (.ckpt or .pth).")
     gen_parser.add_argument("--save-graphs-path", type=str, default=None, help="Output path to save generated graphs as a pickle.")
     gen_parser.add_argument("--load-graphs-path", type=str, default=None, help="Optional path to a saved graphs pickle to evaluate instead of generating.")
     gen_parser.add_argument("--expected-num-graphs", type=int, default=None, help="If set, raise an error unless loaded/generated graph list size matches this.")
     gen_parser.add_argument("--json-out", type=str, default=None, help="Save final evaluation metrics to this JSON file.")
     gen_parser.add_argument("--wireless-output-dir", type=str, default=None, help="Directory for MetroFi plots and sampler history artifacts.")
-    gen_parser.add_argument("--kernel", type=str, default="emd", help="Kernel name (default: 'emd').")
+    gen_parser.add_argument("--kernel-label", "--kernel", dest="kernel", type=str, default="emd", help="Metadata label written to JSON; this does not change metric implementations.")
     gen_parser.add_argument("--n-folds", type=int, default=1, help="Number of folds to evaluate.")
     gen_parser.add_argument("--min-nodes", type=int, default=None, help="Minimum number of nodes to sample.")
     gen_parser.add_argument("--max-nodes", type=int, default=None, help="Maximum number of nodes to sample.")
     gen_parser.add_argument("--num-samples", type=int, default=None, help="Number of samples to generate (overrides cfg.sampler.test_graphs).")
     gen_parser.add_argument("--sampling-batch-size", type=int, default=None, help="Sampling batch size; use the sample count to generate in one pass.")
-    gen_parser.add_argument("--eps-sde", type=float, default=None, help="Override the SDE epsilon used for generation.")
-    gen_parser.add_argument("--eps-time", type=float, default=None, help="Override the solver end time used for generation.")
+    gen_parser.add_argument("--eps-sde", "--sde-eps-sde", dest="eps_sde", type=float, default=None, help="Override the SDE numerical epsilon.")
+    gen_parser.add_argument("--eps-time", "--sampler-eps-time", dest="eps_time", type=float, default=None, help="Override the sampler terminal diffusion time.")
     gen_parser.add_argument("--guidance-scale", type=float, default=None, help="Override CFG guidance scale for conditional generation.")
-    gen_parser.add_argument("--sampler-eps-time", type=float, default=None, help="Override sampler terminal diffusion time.")
     gen_parser.add_argument("--sampler-snr", type=float, default=None, help="Override Langevin corrector SNR.")
     gen_parser.add_argument("--sampler-scale-eps", type=float, default=None, help="Override Langevin corrector noise scale.")
     gen_parser.add_argument("--sampler-n-steps", type=int, default=None, help="Override Langevin corrector steps per predictor step.")
@@ -1068,7 +1161,6 @@ def main():
     gen_parser.add_argument("--sampler-noise-removal", action=argparse.BooleanOptionalAction, default=None, help="Override final denoising/noise-removal flag.")
     gen_parser.add_argument("--sampler-use-corrector", action=argparse.BooleanOptionalAction, default=None, help="Override Langevin corrector usage.")
     gen_parser.add_argument("--sde-num-scales", type=int, default=None, help="Override number of reverse diffusion scales.")
-    gen_parser.add_argument("--sde-eps-sde", type=float, default=None, help="Override the SDE numerical epsilon.")
     gen_parser.add_argument("--model-use-sampled-features", action=argparse.BooleanOptionalAction, default=None, help="Override whether feature extraction uses sampled edges during generation.")
     gen_parser.add_argument("--conditional-eval-split", choices=["val", "test"], default="test", help="Split for conditional masked MSE/MAE.")
     gen_parser.add_argument("--conditional-eval-graphs", type=int, default=None, help="Number of graphs for conditional masked MSE/MAE.")
@@ -1078,20 +1170,22 @@ def main():
     gen_parser.add_argument("--conditional-eval-only", action="store_true", help="Only run MetroFi masked evaluation and skip full sampling metrics.")
     gen_parser.add_argument("--conditional-eval-resume-path", type=str, default=None, help="Optional batch-level resume file for long paired evaluations.")
     gen_parser.add_argument("--no-ema", action="store_true", help="Disable loading EMA checkpoint weights.")
-    gen_parser.add_argument("--skip-size-ref", action="store_true", help="Skip loading size-specific reference metrics.")
-    gen_parser.add_argument("--no-average-ratio-to-size-ref", dest="no_average_ratio_to_size_ref", action="store_true", help="Skip calculating size-matched reference ratios.")
-    gen_parser.set_defaults(no_average_ratio_to_size_ref=False)
+    gen_parser.add_argument("--skip-size-ref", "--no-average-ratio-to-size-ref", dest="skip_size_ref", action="store_true", help="Skip loading and evaluating size-specific reference metrics.")
 
     # Tune subparser
     tune_parser = subparsers.add_parser("tune", parents=[parent_parser], help="Tune hyperparams via grid search.")
     tune_parser.add_argument("--checkpoint", "--ckpt-path", type=str, default=None, help="Forced checkpoint path during tuning.")
     tune_parser.add_argument("--min-nodes", type=int, default=None, help="Minimum number of nodes to sample during tuning.")
     tune_parser.add_argument("--max-nodes", type=int, default=None, help="Maximum number of nodes to sample during tuning.")
-    tune_parser.add_argument("--store-name", type=str, default=None, help="Hyperparameter store filename (.json in hyperparams/).")
+    tune_parser.add_argument("--store-name", type=str, default=None, help="Hyperparameter store identifier (written to hyperparams/<name>.json; omit the extension).")
     tune_parser.add_argument("--num-samples", type=int, default=None, help="Number of graphs generated per tuning trial.")
     tune_parser.add_argument("--sampling-batch-size", type=int, default=None, help="Sampling batch size used by each tuning trial.")
 
     args = parser.parse_args()
+    requested_mode = args.mode
+    validate_cli_args(parser, args)
+    if args.mode == "test":
+        args.mode = "gen"
 
     # Dynamic imports based on chosen model
     MainConfig, MetricsClass, DatasetClass, wandb_name = load_model_components(args.model)
@@ -1104,20 +1198,23 @@ def main():
         cfg.general.device = args.device
     if args.batch_size is not None:
         cfg.data.batch_size = args.batch_size
+    if args.wandb is not None:
+        cfg.general.use_wandb = args.wandb
     if args.mode == "gen" and args.num_samples is not None:
         cfg.sampler.test_graphs = args.num_samples
     if args.mode == "gen" and args.sampling_batch_size is not None:
-        if args.sampling_batch_size < 1:
-            raise ValueError("--sampling-batch-size must be at least 1.")
-        cfg.sampler.batch_size = args.sampling_batch_size
+        OmegaConf.update(
+            cfg,
+            "sampler.batch_size",
+            args.sampling_batch_size,
+            force_add=True,
+        )
     if args.mode == "gen" and args.eps_sde is not None:
         cfg.sde.eps_sde = args.eps_sde
     if args.mode == "gen" and args.eps_time is not None:
         cfg.sampler.eps_time = args.eps_time
     if args.mode == "gen" and getattr(args, "guidance_scale", None) is not None:
         cfg.sampler.guidance_scale = args.guidance_scale
-    if args.mode == "gen" and getattr(args, "sampler_eps_time", None) is not None:
-        cfg.sampler.eps_time = args.sampler_eps_time
     if args.mode == "gen" and getattr(args, "sampler_snr", None) is not None:
         cfg.sampler.snr = args.sampler_snr
     if args.mode == "gen" and getattr(args, "sampler_scale_eps", None) is not None:
@@ -1134,8 +1231,6 @@ def main():
         cfg.sampler.use_corrector = args.sampler_use_corrector
     if args.mode == "gen" and getattr(args, "sde_num_scales", None) is not None:
         cfg.sde.num_scales = args.sde_num_scales
-    if args.mode == "gen" and getattr(args, "sde_eps_sde", None) is not None:
-        cfg.sde.eps_sde = args.sde_eps_sde
     if args.mode == "gen" and getattr(args, "model_use_sampled_features", None) is not None:
         cfg.model.use_sampled_features = args.model_use_sampled_features
     if args.mode == "gen" and getattr(args, "conditional_eval_graphs", None) is not None:
@@ -1145,14 +1240,17 @@ def main():
 
     # Global seeding
     _ = pl.seed_everything(cfg.general.seed, workers=True)
+    log_run_summary(requested_mode.upper(), args.model, cfg)
 
     # Delegate execution
     if args.mode == "train":
         run_train(args, cfg, wandb_name, MetricsClass, DatasetClass)
     elif args.mode == "gen":
         run_gen(args, cfg, MetricsClass, DatasetClass, args.model)
+        log_success("Generation and evaluation completed.")
     elif args.mode == "tune":
         run_tune(args, cfg, args.model)
+        log_success("Hyperparameter tuning completed.")
 
 if __name__ == "__main__":
     main()

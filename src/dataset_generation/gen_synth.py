@@ -1,3 +1,4 @@
+import argparse
 import os
 import pickle
 import numpy as np
@@ -16,6 +17,9 @@ EGO_INTERCONNECT_PROB = 0.01
 EGO_INTRACONNECT_PROB = 0.005
 PA_SIZE_RANGE = (20, 80)
 PA_ATTACH = 3   
+D_REGULAR_DEGREE = 4
+D_REGULAR_SIZE_RANGE = (20, 80)
+D_REGULAR_OOD_SIZES = tuple(range(20, 201, 20))
 SEED = 0
 VAL_RATIO = 0.1
 TEST_RATIO = 0.2
@@ -26,6 +30,7 @@ PATHS = {
     "sbm": os.path.join(BASE_PATH, f"sbm_2comms_graphon.pkl"),
     "ego": os.path.join(BASE_PATH, "ego_graphon.pkl"),
     "pa": os.path.join(BASE_PATH, "pa_graphon.pkl"),
+    "d_regular": os.path.join(BASE_PATH, "d_regular.pkl"),
 }
 
 
@@ -152,6 +157,27 @@ def generate_pa_graphs(num_graphs, size_range, attach, seed):
         graphs.append(G)
     return graphs
 
+
+def generate_d_regular_graphs(num_graphs, min_size, max_size, degree, seed):
+    rng = np.random.default_rng(seed)
+    valid_sizes = [
+        n
+        for n in range(min_size, max_size + 1)
+        if n > degree and n * degree % 2 == 0
+    ]
+    if not valid_sizes:
+        raise ValueError(
+            f"No valid {degree}-regular graph sizes in [{min_size}, {max_size}]."
+        )
+    return [
+        nx.random_regular_graph(
+            d=degree,
+            n=int(rng.choice(valid_sizes)),
+            seed=int(rng.integers(0, 2**32 - 1)),
+        )
+        for _ in range(num_graphs)
+    ]
+
 def split_graphs(graphs, val_ratio, test_ratio, seed):
     rng = np.random.default_rng(seed)
     indices = rng.permutation(len(graphs))
@@ -179,27 +205,56 @@ def save_graphs(graphs, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         pickle.dump(graphs, f)
+    sizes = [graph.number_of_nodes() for split in graphs.values() for graph in split]
+    split_sizes = {split: len(items) for split, items in graphs.items()}
+    print(f"Wrote {path}: splits={split_sizes}, sizes={min(sizes)}..{max(sizes)}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate all supported synthetic graph datasets."
+    )
+    parser.add_argument("--output-dir", default=BASE_PATH)
+    args = parser.parse_args()
+
+    paths = {
+        name: os.path.join(args.output_dir, os.path.basename(path))
+        for name, path in PATHS.items()
+    }
+
+    tree_graphs = generate_tree_graphs(NUM_GRAPHS, *TREE_SIZE_RANGE, seed=SEED + 1)
+    sbm_graphs = generate_sbm_graphs(NUM_GRAPHS, *SBM_COMMS_RANGE, *SBM_COMMS_SIZE, seed=SEED + 2)
+    pa_graphs = generate_pa_graphs(NUM_GRAPHS, PA_SIZE_RANGE, PA_ATTACH, seed=SEED + 3)
+    d_regular_graphs = generate_d_regular_graphs(
+        NUM_GRAPHS,
+        *D_REGULAR_SIZE_RANGE,
+        degree=D_REGULAR_DEGREE,
+        seed=SEED,
+    )
+
+    tree_dataset = split_graphs(tree_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 1)
+    sbm_dataset = split_graphs(sbm_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 2)
+    pa_dataset = split_graphs(pa_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 3)
+    d_regular_dataset = split_graphs(
+        d_regular_graphs, VAL_RATIO, TEST_RATIO, seed=SEED
+    )
+
+    save_graphs(tree_dataset, paths["tree"])
+    save_graphs(sbm_dataset, paths["sbm"])
+    save_graphs(pa_dataset, paths["pa"])
+    save_graphs(d_regular_dataset, paths["d_regular"])
+
+    for size in D_REGULAR_OOD_SIZES:
+        graphs = generate_d_regular_graphs(
+            NUM_GRAPHS,
+            size,
+            size,
+            degree=D_REGULAR_DEGREE,
+            seed=SEED + size,
+        )
+        dataset = split_graphs(graphs, VAL_RATIO, TEST_RATIO, seed=SEED + size)
+        save_graphs(dataset, os.path.join(args.output_dir, f"d_regular_{size}.pkl"))
 
 
 if __name__ == "__main__":
-    planar_graphs = generate_planar_graphs(NUM_GRAPHS, *PLANAR_SIZE_RANGE, seed=SEED)
-    tree_graphs = generate_tree_graphs(NUM_GRAPHS, *TREE_SIZE_RANGE, seed=SEED + 1)
-    sbm_graphs = generate_sbm_graphs(NUM_GRAPHS, *SBM_COMMS_RANGE, *SBM_COMMS_SIZE, seed=SEED + 2)
-    ego_graphs = generate_ego_graphs(NUM_GRAPHS, EGO_NUM_EGOS_RANGE, EGO_SIZE_RANGE, EGO_INTERCONNECT_PROB, EGO_INTRACONNECT_PROB, seed=SEED)
-    pa_graphs = generate_pa_graphs(NUM_GRAPHS, PA_SIZE_RANGE, PA_ATTACH, seed=SEED + 3)
-
-    planar_dataset = split_graphs(planar_graphs, VAL_RATIO, TEST_RATIO, seed=SEED)
-    tree_dataset = split_graphs(tree_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 1)
-    sbm_dataset = split_graphs(sbm_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 2)
-    ego_dataset = split_graphs(ego_graphs, VAL_RATIO, TEST_RATIO, seed=SEED)
-    pa_dataset = split_graphs(pa_graphs, VAL_RATIO, TEST_RATIO, seed=SEED + 3)
-
-    #save_graphs(planar_dataset, PATHS["planar"])
-<<<<<<< HEAD
-    save_graphs(tree_dataset, PATHS["tree"])
-=======
-    #save_graphs(tree_dataset, PATHS["tree"])
->>>>>>> c03cff6 (decouple scheduler logic from train and sampling)
-    save_graphs(sbm_dataset, PATHS["sbm"])
-    #save_graphs(ego_dataset, PATHS["ego"])
-    #save_graphs(pa_dataset, PATHS["pa"])
+    main()

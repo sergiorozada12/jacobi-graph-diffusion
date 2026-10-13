@@ -47,7 +47,10 @@ class WirelessDatasetModule(pl.LightningDataModule):
 
     def setup(self, stage: Optional[str] = None):
         if not self.data_path.exists():
-            raise FileNotFoundError(f"Expected dataset at {self.data_path}. Run tools/build_metrofi_dataset.py first.")
+            raise FileNotFoundError(
+                f"Expected dataset at {self.data_path}. Run "
+                "'python -m src.dataset_generation.gen_metrofi_dataset' first."
+            )
 
         dataset = pd.read_pickle(self.data_path)
         self.metadata = dataset.get("metadata", {})
