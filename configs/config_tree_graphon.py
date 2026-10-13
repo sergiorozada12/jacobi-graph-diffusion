@@ -95,14 +95,14 @@ class TrainConfig:
 
 @dataclass
 class SDEConfig:
-    alpha: float = 1.0  # alpha = beta = 1.0 / tested 0.5 / 1.5
+    alpha: float = 1.0
     beta: float = 1.0
     num_scales: int = 1000
-    s_min: float = 1.0  # s_min = s_max = 1.0 for beta
+    s_min: float = 1.0 
     s_max: float = 1.0
     order: int = 100
     sample_target: Any = True
-    eps_sde: float = 1e-7 # 0.001
+    eps_sde: float = 1e-7
     eps_score: float = 1e-10
 
 

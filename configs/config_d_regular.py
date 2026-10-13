@@ -9,26 +9,28 @@ class GeneralConfig:
     device: str = "cuda"
     check_val_every_n_epochs: int = 500
     save_checkpoint_every_n_epochs: int = 1000
+    num_sanity_val_steps: int = 0
 
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 1e-06
+    eps_time: float = 3e-07
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
     snr: float = 0.1
     scale_eps: float = 0.1
     n_steps: int = 5
     num_nodes: int = 20
-    test_graphs: int = 100
+    test_graphs: int = 8
+    batch_size: int = 8
     use_corrector: bool = False
-    predictor: str = "heun"  # "em" or "milstein" or "heun"
+    predictor: str = "milstein"  # "em" or "milstein" or "heun"
 
 @dataclass
 class DataConfig:
     dir: str = "data"
     data: str = "d_regular"
-    batch_size: int = 32
+    batch_size: int = 48
     max_node_num: int = 80
     max_feat_num: int = 1
     test_split: float = 0.2
@@ -89,14 +91,14 @@ class TrainConfig:
 
 @dataclass
 class SDEConfig:
-    alpha: float = 1.0 # alpha = beta = 1.0 / tested 0.5 / 1.5
+    alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1000
-    s_min: float = 1.0 # s_min = s_max = 1.0 for beta
+    num_scales: int = 500
+    s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 100
+    order: int = 50
     sample_target: Any = True
-    eps_sde: float = 0.001
+    eps_sde: float = 0.005
     eps_score: float = 1e-10
 
 @dataclass

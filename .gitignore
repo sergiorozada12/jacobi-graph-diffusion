@@ -16,6 +16,8 @@ sweep*
 results*
 benchmarks/*
 external_methods
+scripts/*
+logs/*
 
 # C extensions
 *.so

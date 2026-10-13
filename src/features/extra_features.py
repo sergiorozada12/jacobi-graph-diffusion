@@ -100,7 +100,6 @@ class ExtraFeatures:
         elif self.features_type == "all":
             eigenfeatures = self.eigenfeatures(E_t, node_mask)
             E = E_t.clone().detach()
-            extra_edge_attr = torch.zeros((*E.shape[:-1], 0)).type_as(E)
             n_components, batched_eigenvalues, nonlcc_indicator, k_lowest_eigvec = (
                 eigenfeatures  # (bs, 1), (bs, 10),
             )
@@ -110,7 +109,7 @@ class ExtraFeatures:
                     (x_cycles, nonlcc_indicator, k_lowest_eigvec),
                     dim=-1,
                 ),
-                E=extra_edge_attr,
+                E=E,
                 y=torch.hstack((n, y_cycles, n_components, batched_eigenvalues)),
             )
 
@@ -178,7 +177,7 @@ class EigenFeatures:
 
     def __call__(self, E_t, node_mask):
         E_t = E_t.clone().detach()
-        mask = node_mask
+        mask = node_mask.bool()
         A = E_t[..., 1:].sum(dim=-1).float() * mask.unsqueeze(1) * mask.unsqueeze(2)
         # L = compute_laplacian(A, normalize="sym")
         L = compute_laplacian(A, normalize=False)
@@ -208,7 +207,7 @@ class EigenFeatures:
             # Retrieve eigenvectors features
             nonlcc_indicator, k_lowest_eigenvector = get_eigenvectors_features(
                 vectors=eigvectors,
-                node_mask=node_mask,
+                node_mask=mask,
                 n_connected=n_connected_comp,
             )
             return (

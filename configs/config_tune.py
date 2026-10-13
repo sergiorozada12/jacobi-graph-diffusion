@@ -20,7 +20,7 @@ def get_tune_config(model_name, cfg):
         )
         objective = "pa_acc"
         metrics_alias = None
-        
+
     elif model_name in ["sbm", "sbm_2comms"]:
         search_space = SearchSpace(
             order=[30],
@@ -37,7 +37,7 @@ def get_tune_config(model_name, cfg):
         )
         objective = "sbm_acc"
         metrics_alias = None
-        
+
     elif model_name in ["tree", "tree_graphon"]:
         search_space = SearchSpace(
             num_scales=[1000],
@@ -48,7 +48,22 @@ def get_tune_config(model_name, cfg):
         )
         objective = "tree_acc"
         metrics_alias = None
-        
+
+    elif model_name == "d_regular":
+        search_space = SearchSpace(
+            order=[100],
+            sample_target=[True],
+            num_scales=[1000],
+            eps_sde=[1e-1, 1e-2, 1e-3, 1e-4, 1e-5],
+            eps_score=[1e-10],
+            time_schedule=["log"],
+            eps_time=[1e-3, 1e-4, 1e-5, 1e-6],
+            predictor=["heun"],
+            use_corrector=[False],
+        )
+        objective = "4_regular_acc"
+        metrics_alias = "d_regular"
+
     elif model_name == "metrofi":
         search_space = SearchSpace(
             order=[cfg.sde.order] if hasattr(cfg.sde, 'order') else [30],
@@ -64,8 +79,8 @@ def get_tune_config(model_name, cfg):
         )
         objective = "average_ratio"
         metrics_alias = "metrofi"
-        
+
     else:
         raise ValueError(f"Hyperparameter tuning search space is not defined for model: {model_name}")
-        
+
     return search_space, objective, metrics_alias

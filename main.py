@@ -48,21 +48,11 @@ def load_model_components(model_name):
         from src.metrics.val import PASamplingMetrics as MetricsClass
         from src.dataset.spectre import SpectreDatasetModule as DatasetClass
         wandb_name = "pa-graphon"
-    elif model_name == "sbm":
-        from configs.config_sbm import MainConfig
-        from src.metrics.val import SBMSamplingMetrics as MetricsClass
-        from src.dataset.spectre import SpectreDatasetModule as DatasetClass
-        wandb_name = "sbm-graphon"
     elif model_name == "sbm_2comms":
         from configs.config_sbm_2comms import MainConfig
         from src.metrics.val import SBMSamplingMetrics as MetricsClass
         from src.dataset.spectre import SpectreDatasetModule as DatasetClass
         wandb_name = "sbm-2comms-graphon"
-    elif model_name == "tree":
-        from configs.config_tree import MainConfig
-        from src.metrics.val import TreeSamplingMetrics as MetricsClass
-        from src.dataset.spectre import SpectreDatasetModule as DatasetClass
-        wandb_name = "tree"
     elif model_name == "d_regular":
         from configs.config_d_regular import MainConfig
         from src.metrics.val import DRegularSamplingMetrics as MetricsClass
@@ -233,6 +223,7 @@ def run_train(args, cfg, wandb_name, MetricsClass, DatasetClass):
         strategy="ddp_find_unused_parameters_true",
         max_epochs=cfg.train.num_epochs,
         check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
+        num_sanity_val_steps=getattr(cfg.general, "num_sanity_val_steps", 2),
         log_every_n_steps=1,
         callbacks=callbacks,
         logger=logger,
@@ -758,7 +749,8 @@ def run_tune(args, cfg, model_name):
         max_trials=None,
         seed=None,
         device=cfg.general.device,
-        num_graphs=None,
+        num_graphs=args.num_samples,
+        sampling_batch_size=args.sampling_batch_size,
         ckpt_path=args.checkpoint,
         results_path=None,
         store_name=args.store_name,
@@ -780,7 +772,7 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["pa", "sbm", "sbm_2comms", "tree", "tree_graphon", "d_regular", "planar", "metrofi"],
+        choices=["pa", "sbm_2comms", "tree_graphon", "d_regular", "planar", "metrofi"],
         help="Specific diffusion model/config type to use."
     )
     parent_parser.add_argument("--seed", type=int, default=None, help="Override default config seed.")
@@ -805,6 +797,8 @@ def main():
     gen_parser.add_argument("--max-nodes", type=int, default=None, help="Maximum number of nodes to sample.")
     gen_parser.add_argument("--num-samples", type=int, default=None, help="Number of samples to generate (overrides cfg.sampler.test_graphs).")
     gen_parser.add_argument("--sampling-batch-size", type=int, default=None, help="Sampling batch size; use the sample count to generate in one pass.")
+    gen_parser.add_argument("--eps-sde", type=float, default=None, help="Override the SDE epsilon used for generation.")
+    gen_parser.add_argument("--eps-time", type=float, default=None, help="Override the solver end time used for generation.")
     gen_parser.add_argument("--no-ema", action="store_true", help="Disable loading EMA checkpoint weights.")
     gen_parser.add_argument("--skip-size-ref", action="store_true", help="Skip loading size-specific reference metrics.")
     gen_parser.add_argument("--no-average-ratio-to-size-ref", dest="no_average_ratio_to_size_ref", action="store_true", help="Skip calculating size-matched reference ratios.")
@@ -816,6 +810,8 @@ def main():
     tune_parser.add_argument("--min-nodes", type=int, default=None, help="Minimum number of nodes to sample during tuning.")
     tune_parser.add_argument("--max-nodes", type=int, default=None, help="Maximum number of nodes to sample during tuning.")
     tune_parser.add_argument("--store-name", type=str, default=None, help="Hyperparameter store filename (.json in hyperparams/).")
+    tune_parser.add_argument("--num-samples", type=int, default=None, help="Number of graphs generated per tuning trial.")
+    tune_parser.add_argument("--sampling-batch-size", type=int, default=None, help="Sampling batch size used by each tuning trial.")
 
     args = parser.parse_args()
 
@@ -833,7 +829,11 @@ def main():
     if args.mode == "gen" and args.sampling_batch_size is not None:
         if args.sampling_batch_size < 1:
             raise ValueError("--sampling-batch-size must be at least 1.")
-        cfg.data.batch_size = args.sampling_batch_size
+        cfg.sampler.batch_size = args.sampling_batch_size
+    if args.mode == "gen" and args.eps_sde is not None:
+        cfg.sde.eps_sde = args.eps_sde
+    if args.mode == "gen" and args.eps_time is not None:
+        cfg.sampler.eps_time = args.eps_time
 
     # Global seeding
     _ = pl.seed_everything(cfg.general.seed, workers=True)

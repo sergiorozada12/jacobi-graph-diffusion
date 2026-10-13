@@ -13,7 +13,7 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = True
-    eps_time: float = 0.001 # 1e-11 works good with large number of params
+    eps_time: float = 0.001
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
     snr: float = 0.01
@@ -91,12 +91,12 @@ class TrainConfig:
 class SDEConfig:
     alpha: float = 1.0
     beta: float = 1.0
-    num_scales: int = 1000 # Looks better with 2000 and 3000 improves
+    num_scales: int = 1000
     s_min: float = 1.0
     s_max: float = 1.0
-    order: int = 30 # Looks 30 improves for SBM
+    order: int = 30
     sample_target: Any = True
-    eps_sde: float = 1e-5 # 1e-7 becomes stable
+    eps_sde: float = 1e-5
     eps_score: float = 1e-10
 
 @dataclass

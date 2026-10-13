@@ -16,6 +16,7 @@ from omegaconf import OmegaConf
 from src.dataset.spectre import SpectreDatasetModule
 from src.dataset.utils import DistributionNodes, compute_reference_metrics
 from src.metrics.val import (
+    DRegularSamplingMetrics,
     EgoSamplingMetrics,
     IMDBSamplingMetrics,
     PASamplingMetrics,
@@ -57,6 +58,7 @@ class TuningSettings:
     seed: Optional[int] = None
     device: Optional[str] = None
     num_graphs: Optional[int] = None
+    sampling_batch_size: Optional[int] = None
     ckpt_path: Optional[Union[str, Path]] = None
     results_path: Optional[Union[str, Path]] = None
     store_name: Optional[str] = None
@@ -124,6 +126,7 @@ def resolve_metrics_name(dataset_name: str, override: Optional[str]) -> str:
 
     name = dataset_name.lower()
     mapping = [
+        ("d_regular", "d_regular"),
         ("sbm", "sbm"),
         ("planar", "planar"),
         ("tree", "tree"),
@@ -142,6 +145,7 @@ def resolve_metrics_name(dataset_name: str, override: Optional[str]) -> str:
 
 def resolve_metrics_class(alias: str) -> Type[SpectreSamplingMetrics]:
     metrics_map = {
+        "d_regular": DRegularSamplingMetrics,
         "sbm": SBMSamplingMetrics,
         "planar": PlanarSamplingMetrics,
         "tree": TreeSamplingMetrics,
@@ -462,6 +466,8 @@ def run_tuning(base_cfg, settings: TuningSettings):
         cfg.general.device = settings.device
     if settings.num_graphs is not None:
         cfg.sampler.test_graphs = settings.num_graphs
+    if settings.sampling_batch_size is not None:
+        cfg.sampler.batch_size = settings.sampling_batch_size
     if settings.seed is not None:
         cfg.general.seed = settings.seed
     if settings.min_nodes is not None or settings.max_nodes is not None:

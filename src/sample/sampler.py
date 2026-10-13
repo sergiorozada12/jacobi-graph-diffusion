@@ -13,6 +13,7 @@ class Sampler:
         self.device = torch.device(cfg.general.device)
         self.max_num_nodes = cfg.data.max_node_num
         self.num_nodes = cfg.sampler.num_nodes
+        self.batch_size = getattr(cfg.sampler, "batch_size", cfg.data.batch_size)
         self.score_mode = getattr(cfg.train, "training_mode", "graph")
 
         self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
@@ -33,7 +34,7 @@ class Sampler:
         )
 
     def _get_solver(self):
-        shape_adj = (self.cfg.data.batch_size, self.max_num_nodes, self.max_num_nodes)
+        shape_adj = (self.batch_size, self.max_num_nodes, self.max_num_nodes)
 
         return PCSolver(
             sde=self.sde,
@@ -67,14 +68,14 @@ class Sampler:
 
     def _make_flags(self, use_node_dist: bool = True):
         flags = torch.zeros(
-            self.cfg.data.batch_size,
+            self.batch_size,
             self.max_num_nodes,
             dtype=torch.bool,
             device=self.device
         )
 
         if use_node_dist and self.node_dist:
-            num_nodes = self.node_dist.sample_n(self.cfg.data.batch_size, self.device)
+            num_nodes = self.node_dist.sample_n(self.batch_size, self.device)
             for i, n in enumerate(num_nodes):
                 flags[i, :n] = 1
         else:
@@ -108,7 +109,7 @@ class Sampler:
         nodelist=None,
         keep_zero_weights: bool = False,
     ):
-        num_rounds = math.ceil(self.cfg.sampler.test_graphs / self.cfg.data.batch_size)
+        num_rounds = math.ceil(self.cfg.sampler.test_graphs / self.batch_size)
         generated = []
         first_adj = None
         first_flags = None
