@@ -13,8 +13,16 @@ from src.features.extra_features import ExtraFeatures
 from src.models.transformer_model import GraphTransformer
 from src.sample.sampler import Sampler
 from src.sde.sde import JacobiSDE
-from src.utils import build_time_schedule
-from src.visualization.plots import close_figure, plot_edge_weight_histograms
+from src.metrics.metrofi_eval import (
+    build_metrofi_masked_eval_figures,
+    flatten_masked_eval_metrics,
+    run_metrofi_masked_eval_variants,
+)
+from src.utils import adjs_to_graphs, build_time_schedule, node_positional_encoding
+from src.visualization.plots import (
+    close_figure,
+    plot_edge_weight_histograms,
+)
 
 
 class DiffusionBaseModule(pl.LightningModule):
@@ -39,6 +47,12 @@ class DiffusionBaseModule(pl.LightningModule):
         self._ran_sampling_metrics = False
 
         self.use_sampled_features = getattr(cfg.model, "use_sampled_features", True)
+        self.conditional = bool(getattr(cfg.model, "conditional", False))
+        self.condition_dim = int(getattr(cfg.model, "condition_dim", 3))
+        self.use_location_condition = bool(getattr(cfg.model, "use_location_condition", True))
+        self.condition_dropout_prob = float(getattr(cfg.train, "condition_dropout_prob", 0.0))
+        self.use_positional_encoding = bool(getattr(cfg.model, "positional_encoding", False))
+        self.positional_encoding_dim = int(getattr(cfg.model, "positional_encoding_dim", 0))
         self.use_ema = getattr(cfg.train, "use_ema", False)
         self.ema_decay = getattr(cfg.train, "ema_decay", 0.999)
         self._cached_ref_graphs: Optional[List] = None
@@ -151,7 +165,11 @@ class DiffusionBaseModule(pl.LightningModule):
     def on_train_start(self):
         if self.use_ema and self.ema_model is not None:
             self.ema_model.to(self.device)
-            self.ema_model.load_state_dict(self.model.state_dict())
+            # Lightning restores both model and EMA weights before this hook.
+            # Only initialize EMA on a fresh run; otherwise a resumed run would
+            # silently discard the EMA state saved in the checkpoint.
+            if self.global_step == 0:
+                self.ema_model.load_state_dict(self.model.state_dict())
 
     def _sample_time(self, batch_size):
         schedule = self.time_schedule_steps.to(self.device)
@@ -177,27 +195,72 @@ class DiffusionBaseModule(pl.LightningModule):
         complement = (1.0 - adj).unsqueeze(-1)
         return torch.cat([complement, adj.unsqueeze(-1)], dim=-1)
 
+    def _append_positional_encoding(self, X: torch.Tensor, flags: torch.Tensor) -> torch.Tensor:
+        if not self.use_positional_encoding:
+            return X
+        pe = node_positional_encoding(X.size(0), X.size(1), self.positional_encoding_dim, X.device, X.dtype)
+        pe = pe * flags.to(dtype=X.dtype).unsqueeze(-1)
+        return torch.cat([X, pe], dim=-1)
+
+    def _model_inputs(self, extra_pred, flags):
+        X = self._append_positional_encoding(extra_pred.X.float(), flags)
+        return X, extra_pred.E.float()
+
     def _run_model(self, extra_pred, y, flags):
-        return self.model(extra_pred.X.float(), extra_pred.E.float(), y, flags)
+        X, E = self._model_inputs(extra_pred, flags)
+        return self.model(X, E, y, flags)
+
+    def _run_model_with(self, model, extra_pred, y, flags):
+        X, E = self._model_inputs(extra_pred, flags)
+        return model(X, E, y, flags)
+
+    def _append_condition(self, y: torch.Tensor, coords: Optional[torch.Tensor], batch_size: int, *, dropout: bool) -> torch.Tensor:
+        if not self.conditional or not self.use_location_condition:
+            return y
+
+        if coords is None:
+            cond = torch.zeros(batch_size, self.condition_dim, device=self.device, dtype=y.dtype)
+        else:
+            coords = coords.to(device=self.device, dtype=y.dtype)
+            present = torch.ones(batch_size, 1, device=self.device, dtype=y.dtype)
+            cond = torch.cat([coords, present], dim=1)
+            if cond.size(1) != self.condition_dim:
+                raise ValueError(f"Expected condition dim {self.condition_dim}, got {cond.size(1)}.")
+
+        if dropout and self.condition_dropout_prob > 0.0:
+            drop = torch.rand(batch_size, device=self.device) < self.condition_dropout_prob
+            cond = cond.clone()
+            cond[drop] = 0.0
+
+        return torch.cat([y, cond], dim=1)
 
     @staticmethod
-    def _extract_batch_tensors(batch) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    def _extract_batch_tensors(batch) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         if isinstance(batch, (list, tuple)):
+            if len(batch) == 4:
+                return batch[0], batch[1], batch[2], batch[3]
             if len(batch) == 3:
-                return batch[0], batch[1], batch[2]
+                return batch[0], batch[1], batch[2], None
             if len(batch) == 2:
-                return batch[0], batch[1], None
+                return batch[0], batch[1], None, None
         raise ValueError(f"Unexpected batch structure: {type(batch)}")
 
     def training_step(self, batch, batch_idx):
-        X, adj, observed_mask = self._extract_batch_tensors(batch)
-        return self._training_step_impl(batch_idx, X, adj, observed_mask)
+        X, adj, observed_mask, coords = self._extract_batch_tensors(batch)
+        return self._training_step_impl(batch_idx, X, adj, observed_mask, coords)
 
     def validation_step(self, batch, batch_idx):
-        X, adj, observed_mask = self._extract_batch_tensors(batch)
-        self._validation_step_impl(X, adj, observed_mask)
+        X, adj, observed_mask, coords = self._extract_batch_tensors(batch)
+        self._validation_step_impl(X, adj, observed_mask, coords)
         if not self._ran_sampling_metrics:
-            self._val_sampler()
+            if self.dataset_name == "metrofi":
+                self._val_metrofi_masked_sampler(adj, observed_mask, coords if self.conditional else None)
+                if not self.conditional:
+                    self._val_sampler()
+            elif self.conditional:
+                self._val_metrofi_masked_sampler(adj, observed_mask, coords)
+            else:
+                self._val_sampler()
             self._ran_sampling_metrics = True
         return
 
@@ -205,11 +268,78 @@ class DiffusionBaseModule(pl.LightningModule):
         self._ran_sampling_metrics = False
 
     def on_fit_end(self):
-        ckpt_dir = f"checkpoints/{self.cfg.data.data}"
-        os.makedirs(ckpt_dir, exist_ok=True)
-        torch.save(self.model.state_dict(), f"{ckpt_dir}/weights.pth")
+        name = getattr(self.cfg.general, "name", None)
+        if not name:
+            data_name = self.cfg.data.data
+            if data_name == "metrofi":
+                suffix = "cond" if getattr(self.cfg.model, "conditional", False) else "uncond"
+                name = f"{data_name}-{suffix}"
+            else:
+                name = data_name
+        ckpt_dir = Path("checkpoints") / name
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(self.model.state_dict(), ckpt_dir / "weights.pth")
         if self.use_ema and self.ema_model is not None:
-            torch.save(self.ema_model.state_dict(), f"{ckpt_dir}/weights_ema.pth")
+            torch.save(self.ema_model.state_dict(), ckpt_dir / "weights_ema.pth")
+
+    def _val_metrofi_masked_sampler(self, adj, observed_mask, coords):
+        if self.dataset_name != "metrofi" or observed_mask is None:
+            return
+        if self.conditional and coords is None:
+            return
+
+        eval_model = self._get_eval_model()
+        with self._using_sampler_model(eval_model):
+            results = run_metrofi_masked_eval_variants(
+                self.cfg,
+                self.sampler,
+                adj.float(),
+                observed_mask.to(adj.device).bool(),
+                condition=coords if self.use_location_condition else None,
+                include_masked_variant=True,
+                include_full_variant=True,
+            )
+
+        flat_metrics = flatten_masked_eval_metrics(results)
+        mode = "conditional" if self.conditional else "unconditional"
+        name = getattr(self.cfg.general, "name", None) or self.cfg.data.data
+        out_dir = Path(self.cfg.general.save_path) / name / f"{mode}_val"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        metric_text = " ".join(f"{key}={val:.8f}" for key, val in flat_metrics.items())
+        with open(out_dir / "metrics.txt", "a") as f:
+            f.write(
+                f"epoch={self.current_epoch} step={self.global_step} "
+                f"graphs={adj.size(0)} {metric_text}\n"
+            )
+
+        for key, val in flat_metrics.items():
+            self.log(
+                f"val/{mode}_{key}",
+                val,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=key.endswith("_mse") or key.endswith("_mae"),
+                sync_dist=True,
+            )
+
+        if wandb.run:
+            figures = build_metrofi_masked_eval_figures(
+                results,
+                title_prefix=f"metrofi {mode} val epoch {self.current_epoch}",
+            )
+            for variant, variant_figures in figures.items():
+                log_payload = {}
+                hist_fig = variant_figures.get("hist")
+                graph_fig = variant_figures.get("sampled_graph")
+                if hist_fig is not None:
+                    log_payload[f"val/{mode}_{variant}_edge_weight_hist"] = wandb.Image(hist_fig)
+                    close_figure(hist_fig)
+                if graph_fig is not None:
+                    log_payload[f"val/{mode}_{variant}_sampled_graph"] = wandb.Image(graph_fig)
+                    close_figure(graph_fig)
+                if log_payload:
+                    wandb.log(log_payload, commit=False)
+
 
     def _val_sampler(self):
         eval_model = self._get_eval_model()
@@ -239,10 +369,10 @@ class DiffusionBaseModule(pl.LightningModule):
    
         self._maybe_log_weight_histograms(samples, adj_samples)
 
-    def _training_step_impl(self, batch_idx, X, adj, observed_mask):
+    def _training_step_impl(self, batch_idx, X, adj, observed_mask, coords=None):
         raise NotImplementedError
 
-    def _validation_step_impl(self, X, adj, observed_mask):
+    def _validation_step_impl(self, X, adj, observed_mask, coords=None):
         raise NotImplementedError
 
     def _load_reference_graphs(self) -> Optional[List]:

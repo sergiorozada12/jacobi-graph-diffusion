@@ -60,7 +60,7 @@ export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libgomp.so.1
 ## 🛠️ CLI Reference & subcommands
 
 `main.py` exposes common flags that apply to all subcommands:
-*   `--model`: The target graph diffusion config (`pa`, `sbm`, `sbm_2comms`, `tree`, `tree_graphon`, `planar`, `metrofi`).
+*   `--model`: The target graph diffusion config (`pa`, `sbm_2comms`, `tree_graphon`, `d_regular`, `planar`, `metrofi_cond`, `metrofi_uncond`).
 *   `--seed`: Override the random seeding dynamically.
 *   `--device`: Override target execution device (e.g. `cuda:0`, `cpu`).
 

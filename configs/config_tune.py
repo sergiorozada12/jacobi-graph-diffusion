@@ -64,7 +64,7 @@ def get_tune_config(model_name, cfg):
         objective = "4_regular_acc"
         metrics_alias = "d_regular"
 
-    elif model_name == "metrofi":
+    elif model_name in ["metrofi_cond", "metrofi_uncond"]:
         search_space = SearchSpace(
             order=[cfg.sde.order] if hasattr(cfg.sde, 'order') else [30],
             sample_target=[cfg.sde.sample_target] if hasattr(cfg.sde, 'sample_target') else [True],

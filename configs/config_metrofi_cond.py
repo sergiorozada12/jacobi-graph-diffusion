@@ -7,6 +7,7 @@ class GeneralConfig:
     seed: int = 17
     use_wandb: bool = True
     save_path: str = "results/"
+    name: Optional[str] = "metrofi-cond-nosf"
     device: str = "cuda"
     check_val_every_n_epochs: int = 100
     save_checkpoint_every_n_epochs: int = 100
@@ -15,7 +16,7 @@ class GeneralConfig:
 @dataclass
 class SamplerConfig:
     noise_removal: bool = False
-    eps_time: float = 1e-1
+    eps_time: float = 3e-2
     time_schedule: str = "log"
     time_schedule_power: float = 2.0
     snr: float = 0.01
@@ -23,18 +24,21 @@ class SamplerConfig:
     n_steps: int = 1
     num_nodes: int = 70
     test_graphs: int = 32
-    use_corrector: bool = True
-    predictor: str = "em"  # "em" or "milstein"
+    use_corrector: bool = False
+    predictor: str = "milstein"  # "em", "heun", or "milstein"
     val_use_full_graph: bool = True
     val_keep_isolates: bool = True
     val_use_fixed_nodelist: bool = True
+    guidance_scale: float = 1.8
+    conditional_eval_graphs: int = 943
+    conditional_eval_seed: int = 17
 
 
 @dataclass
 class DataConfig:
     dir: str = "data/metrofi"
     data: str = "metrofi"
-    batch_size: int = 32
+    batch_size: int = 128  # originally 32
     max_node_num: int = 70
     max_feat_num: int = 1
     test_split: float = 0.1
@@ -42,6 +46,10 @@ class DataConfig:
     init: str = "ones"
     min_observed_nodes: int = 3
     max_interference: float = 1.0
+    max_train_graphs: Optional[int] = None
+    max_val_graphs: Optional[int] = None
+    max_test_graphs: Optional[int] = None
+    include_coordinates: bool = True
 
 
 @dataclass
@@ -49,7 +57,12 @@ class ModelConfig:
     max_feat_num: int = 2
     extra_features_type: str = "rrwp"
     rrwp_steps: int = 20
-    use_sampled_features: bool = True
+    use_sampled_features: bool = False
+    conditional: bool = True
+    use_location_condition: bool = True
+    condition_dim: int = 3  # normalized lat/lon plus condition-present flag
+    positional_encoding: bool = True
+    positional_encoding_dim: int = 8
     n_layers: int = 8
     input_dims: dict = field(
         default_factory=lambda: {
@@ -97,8 +110,9 @@ class TrainConfig:
     eps_sde_train: float = 1e-5
     time_schedule_train: str = "log"
     time_schedule_power_train: float = 2.0
-    num_epochs: int = 200
+    num_epochs: int = 5000
     lambda_train: float = 5.0
+    condition_dropout_prob: float = 0.1
     use_ema: bool = True
     ema_decay: float = 0.999
     training_mode: str = "weighted"  # options: "graph", "weighted", "direct_score"
@@ -113,7 +127,7 @@ class SDEConfig:
     s_max: float = 1.0
     order: int = 100
     sample_target: Any = False
-    eps_sde: float = 1e-1
+    eps_sde: float = 5e-1
     eps_score: float = 1e-10
 
 

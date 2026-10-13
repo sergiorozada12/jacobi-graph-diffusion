@@ -8,6 +8,16 @@ from pathlib import Path
 from omegaconf import OmegaConf
 import numpy as np
 
+from src.metrics.metrofi_eval import (
+    apply_condition_mode,
+    flatten_masked_eval_metrics,
+    run_metrofi_masked_eval_variants,
+    save_metrofi_masked_eval_artifacts,
+    save_metrofi_pooled_weights_json,
+    select_metrofi_eval_tensors,
+    timestamped_eval_dir,
+)
+
 
 def print_header(title):
     print("\n" + "=" * 80)
@@ -41,6 +51,32 @@ def print_row(label, val, ref=None):
         else:
             print(f"  ▸ {label:<35} | {val}")
 
+
+def experiment_name(cfg):
+    name = getattr(cfg.general, "name", None)
+    if name:
+        return name
+    data_name = cfg.data.data
+    if data_name == "metrofi":
+        suffix = "cond" if getattr(cfg.model, "conditional", False) else "uncond"
+        return f"{data_name}-{suffix}"
+    return data_name
+
+
+def load_checkpoint_state_dict(path, *, use_ema=True):
+    state = torch.load(path, map_location="cpu")
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+
+    if isinstance(state, dict):
+        model_state = {k[len("model."):]: v for k, v in state.items() if k.startswith("model.")}
+        ema_state = {k[len("ema_model."):]: v for k, v in state.items() if k.startswith("ema_model.")}
+        if use_ema and ema_state:
+            return ema_state
+        if model_state:
+            return model_state
+    return state
+
 # Core components and utilities loader
 def load_model_components(model_name):
     if model_name == "pa":
@@ -68,14 +104,30 @@ def load_model_components(model_name):
         from src.metrics.val import PlanarSamplingMetrics as MetricsClass
         from src.dataset.spectre import SpectreDatasetModule as DatasetClass
         wandb_name = "planar"
-    elif model_name == "metrofi":
-        from configs.config_metrofi import MainConfig
+    elif model_name == "metrofi_cond":
+        from configs.config_metrofi_cond import MainConfig
         from src.metrics.val import WirelessSamplingMetrics as MetricsClass
         from src.dataset.wireless import WirelessDatasetModule as DatasetClass
-        wandb_name = "metrofi"
+        wandb_name = "metrofi-cond"
+    elif model_name == "metrofi_uncond":
+        from configs.config_metrofi_uncond import MainConfig
+        from src.metrics.val import WirelessSamplingMetrics as MetricsClass
+        from src.dataset.wireless import WirelessDatasetModule as DatasetClass
+        wandb_name = "metrofi-uncond-pe-nosf"
     else:
         raise ValueError(f"Unknown model name: {model_name}")
     return MainConfig, MetricsClass, DatasetClass, wandb_name
+
+def apply_metrofi_conditional_config(cfg, model_name):
+    if model_name not in {"metrofi_cond", "metrofi_uncond"}:
+        return
+
+    input_dims = dict(cfg.model.input_dims)
+    if getattr(cfg.model, "conditional", False):
+        input_dims["y"] = int(input_dims["y"]) + int(cfg.model.condition_dim)
+    if getattr(cfg.model, "positional_encoding", False):
+        input_dims["X"] = int(input_dims["X"]) + int(cfg.model.positional_encoding_dim)
+    cfg.model.input_dims = input_dims
 
 # Helper functions for generation and evaluation
 def _validate_expected_num_graphs(samples, expected_num_graphs):
@@ -196,7 +248,7 @@ def run_train(args, cfg, wandb_name, MetricsClass, DatasetClass):
         node_dist=node_dist,
     )
 
-    ckpt_dir = Path(f"checkpoints/{cfg.data.data}")
+    ckpt_dir = Path("checkpoints") / experiment_name(cfg)
     ckpt_path = ckpt_dir / "last.ckpt"
 
     callbacks = []
@@ -235,7 +287,7 @@ def run_train(args, cfg, wandb_name, MetricsClass, DatasetClass):
         trainer.fit(model, datamodule=datamodule)
 
 def run_gen(args, cfg, MetricsClass, DatasetClass, model_name):
-    if model_name == "metrofi":
+    if model_name.startswith("metrofi"):
         run_gen_wireless(args, cfg, MetricsClass, DatasetClass)
     else:
         run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name)
@@ -306,7 +358,7 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             if not weight_path.exists():
                 raise FileNotFoundError(f"Provided checkpoint does not exist: {weight_path}")
         else:
-            ckpt_dir = Path("checkpoints") / cfg.data.data
+            ckpt_dir = Path("checkpoints") / experiment_name(cfg)
             ema_path = ckpt_dir / "weights_ema.pth"
             weights_path = ckpt_dir / "weights.pth"
             if (not args.no_ema) and cfg.train.use_ema and ema_path.exists():
@@ -319,29 +371,10 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
                     f"Looked for {ema_path} and {weights_path}."
                 )
 
-        state_dict = torch.load(weight_path, map_location="cpu")
-        
-        # Load state dict helper for Lightning checkpoints
-        if 'state_dict' in state_dict:
-            state_dict = state_dict['state_dict']
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                if k.startswith('model.'):
-                    new_state_dict[k.replace('model.', '', 1)] = v
-                elif k.startswith('ema_model.'):
-                    new_state_dict[k.replace('ema_model.', '', 1)] = v
-                else:
-                    new_state_dict[k] = v
-            state_dict = new_state_dict
-        elif isinstance(state_dict, dict) and "state_dict" not in state_dict:
-            pl_state = state_dict
-            model_state = {k[len("model."):]: v for k, v in pl_state.items() if k.startswith("model.")}
-            ema_state = {k[len("ema_model."):]: v for k, v in pl_state.items() if k.startswith("ema_model.")}
-            if (not args.no_ema) and cfg.train.use_ema and ema_state:
-                state_dict = ema_state
-            elif model_state:
-                state_dict = model_state
-
+        state_dict = load_checkpoint_state_dict(
+            weight_path,
+            use_ema=(not args.no_ema) and cfg.train.use_ema,
+        )
         model.load_state_dict(state_dict)
         model = model.to(cfg.general.device)
         model.eval()
@@ -513,10 +546,165 @@ def run_gen_spectre(args, cfg, MetricsClass, DatasetClass, model_name):
             json.dump(data, f, indent=4)
         log_success(f"Results saved to {out_path}")
 
+def _print_wireless_masked_eval_metrics(label, split, results):
+    if results is None:
+        return
+    flat_metrics = flatten_masked_eval_metrics(results)
+    print_header(f"{label} wireless {split} masked eval")
+    for key in sorted(flat_metrics):
+        print_row(f"{label}_{split}_{key}", flat_metrics[key])
+
+
+def _run_wireless_masked_eval(
+    cfg,
+    datamodule,
+    sampler,
+    split="test",
+    checkpoint_path=None,
+    use_ema=None,
+    run_name=None,
+    condition_mode="true",
+    mask_mode="true",
+    resume_path=None,
+):
+    label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
+    dataset = getattr(datamodule, f"{split}_ds")
+    n_graphs = int(getattr(cfg.sampler, "conditional_eval_graphs", cfg.sampler.test_graphs))
+    seed = int(getattr(cfg.sampler, "conditional_eval_seed", cfg.general.seed))
+
+    try:
+        indices, gt_adj, observed_mask, coords, rng = select_metrofi_eval_tensors(
+            dataset,
+            n_graphs,
+            cfg.general.device,
+            seed,
+        )
+    except ValueError as exc:
+        log_warning(f"Skipping {label} {split} masked eval: {exc}")
+        return None
+
+    use_location_condition = bool(getattr(cfg.model, "use_location_condition", True))
+    if getattr(cfg.model, "conditional", False):
+        if coords is None:
+            log_warning(f"Skipping conditional {split} masked eval: dataset has no coordinates.")
+            return None
+        condition = apply_condition_mode(coords, rng, condition_mode) if use_location_condition else None
+    else:
+        condition = None
+        condition_mode = "none"
+
+    mask_mode = str(mask_mode).lower()
+    if mask_mode == "true":
+        include_masked_variant, include_full_variant = True, False
+    elif mask_mode == "full":
+        include_masked_variant, include_full_variant = False, True
+    elif mask_mode == "both":
+        include_masked_variant, include_full_variant = True, True
+    else:
+        raise ValueError(f"Unknown conditional eval mask mode: {mask_mode}")
+
+    results = run_metrofi_masked_eval_variants(
+        cfg,
+        sampler,
+        gt_adj,
+        observed_mask,
+        condition=condition,
+        include_masked_variant=include_masked_variant,
+        include_full_variant=include_full_variant,
+        resume_path=resume_path,
+    )
+
+    guidance = float(getattr(cfg.sampler, "guidance_scale", 0.0))
+    guidance_tag = f"g{guidance:g}".replace(".", "p")
+    ckpt_tag = Path(checkpoint_path).stem.replace("=", "") if checkpoint_path else "unknownckpt"
+    name_tag = run_name or f"samples_{guidance_tag}_{ckpt_tag}_{condition_mode}"
+    out_dir = Path(cfg.general.save_path) / experiment_name(cfg) / f"{label}_{split}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sample_dir = timestamped_eval_dir(out_dir, name_tag, seed, gt_adj.size(0))
+    sample_dir.mkdir(parents=True, exist_ok=True)
+
+    flat_metrics = flatten_masked_eval_metrics(results)
+    metadata = {
+        "label": label,
+        "split": split,
+        "seed": seed,
+        "graphs": int(gt_adj.size(0)),
+        "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
+        "checkpoint_tag": ckpt_tag,
+        "use_ema": bool(use_ema) if use_ema is not None else None,
+        "guidance": guidance,
+        "condition_mode": condition_mode,
+        "mask_mode": mask_mode,
+        "use_location_condition": use_location_condition,
+        "predictor": str(getattr(cfg.sampler, "predictor", "")),
+        "eps_time": float(getattr(cfg.sampler, "eps_time", 0.0)),
+        "snr": float(getattr(cfg.sampler, "snr", 0.0)),
+        "scale_eps": float(getattr(cfg.sampler, "scale_eps", 0.0)),
+        "n_steps": int(getattr(cfg.sampler, "n_steps", 0)),
+        "use_corrector": bool(getattr(cfg.sampler, "use_corrector", False)),
+        "noise_removal": bool(getattr(cfg.sampler, "noise_removal", False)),
+        "time_schedule": str(getattr(cfg.sampler, "time_schedule", "")),
+        "time_schedule_power": float(getattr(cfg.sampler, "time_schedule_power", 0.0)),
+        "sde_num_scales": int(getattr(cfg.sde, "num_scales", 0)),
+        "use_sampled_features": bool(getattr(cfg.model, "use_sampled_features", True)),
+        "batch_size": int(getattr(cfg.data, "batch_size", 0)),
+        "run_name": name_tag,
+        "sample_dir": str(sample_dir),
+    }
+    meta_text = " ".join(f"{key}={val}" for key, val in metadata.items())
+    metric_text = " ".join(f"{key}={val:.8f}" for key, val in flat_metrics.items())
+    with open(out_dir / "metrics.txt", "a") as f:
+        f.write(f"{meta_text} {metric_text}\n")
+
+    serializable_results = {}
+    for variant, payload in results.items():
+        serializable_results[variant] = {
+            "metrics": payload["metrics"],
+            "gen_adj": payload["gen_adj"].detach().cpu(),
+            "gt_edge_values": payload["gt_edge_values"],
+            "gen_edge_values": payload["gen_edge_values"],
+        }
+    torch.save(
+        {
+            "metadata": metadata,
+            "indices": torch.as_tensor(indices, dtype=torch.long),
+            "gt_adj": gt_adj.detach().cpu(),
+            "observed_mask": observed_mask.detach().cpu(),
+            "coords": None if coords is None else coords.detach().cpu(),
+            "results": serializable_results,
+            "metrics": flat_metrics,
+        },
+        sample_dir / "masked_eval_samples.pt",
+    )
+    with open(sample_dir / "metrics.json", "w") as f:
+        json.dump({"metadata": metadata, "metrics": flat_metrics}, f, indent=2)
+
+    weights_path = save_metrofi_pooled_weights_json(
+        results,
+        Path("samples") / "metrofi_edge_weights.json",
+        interference_min=datamodule.interference_min,
+        interference_max=datamodule.interference_max,
+    )
+    log_success(f"Saved pooled MetroFi edge weights in dBm to {weights_path}")
+
+    save_metrofi_masked_eval_artifacts(
+        results,
+        gt_adj.detach().cpu(),
+        observed_mask.detach().cpu(),
+        sample_dir,
+        matrix_size=cfg.data.max_node_num,
+        title_prefix=f"metrofi {label} {split}",
+    )
+    return results
+
+
+def _run_wireless_conditional_eval(*args, **kwargs):
+    return _run_wireless_masked_eval(*args, **kwargs)
+
 def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
     from src.models.transformer_model import GraphTransformer
     from src.sample.sampler import Sampler
-    from src.dataset.utils import compute_reference_metrics
+    from src.dataset.utils import compute_reference_metrics, save_graphs_pickle
     from src.metrics.abstract import compute_ratios
     from src.utils import adjs_to_graphs
     from src.visualization.plots import (
@@ -525,6 +713,9 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
         plot_weighted_adj_and_graph,
         save_figure,
     )
+
+    if args.load_graphs_path is not None:
+        raise ValueError("--load-graphs-path is not yet supported for MetroFi evaluation.")
 
     cfg.train.training_mode = "weighted"
     cfg.model.output_dims = dict(cfg.model.score_output_dims)
@@ -551,7 +742,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
     interference_max = float(interference_min if interference_max is None else interference_max)
     interference_scale = max(0.0, interference_max - interference_min)
 
-    ckpt_dir = Path("checkpoints") / cfg.data.data
+    ckpt_dir = Path("checkpoints") / experiment_name(cfg)
     if args.checkpoint:
         checkpoint_path = Path(args.checkpoint)
     else:
@@ -575,12 +766,46 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
         act_fn_in=torch.nn.ReLU(),
         act_fn_out=torch.nn.ReLU(),
     )
-    state_dict = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = load_checkpoint_state_dict(
+        checkpoint_path,
+        use_ema=(not args.no_ema) and cfg.train.use_ema,
+    )
     model.load_state_dict(state_dict)
     model = model.to(cfg.general.device)
     model.eval()
 
-    sampler = Sampler(cfg=cfg, model=model, node_dist=None)
+    artifact_dir = Path(getattr(args, "wireless_output_dir", None) or "samples")
+    sampler = Sampler(cfg=cfg, model=model, node_dist=None, artifact_dir=artifact_dir)
+
+    cond_split = getattr(args, "conditional_eval_split", "test")
+    if getattr(args, "conditional_eval_only", False):
+        masked_eval_results = _run_wireless_masked_eval(
+            cfg,
+            datamodule,
+            sampler,
+            split=cond_split,
+            checkpoint_path=checkpoint_path,
+            use_ema=(not args.no_ema) and cfg.train.use_ema,
+            run_name=getattr(args, "conditional_eval_name", None),
+            condition_mode=getattr(args, "conditional_eval_condition_mode", "true"),
+            mask_mode=getattr(args, "conditional_eval_mask_mode", "true"),
+            resume_path=getattr(args, "conditional_eval_resume_path", None),
+        )
+        label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
+        _print_wireless_masked_eval_metrics(label, cond_split, masked_eval_results)
+        if args.json_out and masked_eval_results is not None:
+            out_path = Path(args.json_out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w") as f:
+                json.dump({
+                    "dataset_name": cfg.data.data,
+                    "split": cond_split,
+                    "model": label,
+                    "metrics": flatten_masked_eval_metrics(masked_eval_results),
+                }, f, indent=2)
+            log_success(f"Results saved to {out_path}")
+        return
+
     samples, _, adj_samples = sampler.sample(
         keep_isolates=True,
         return_adjs=True,
@@ -599,7 +824,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
         keep_zero_weights=True,
         nodelist=list(range(adj_rescaled.shape[-1])),
     )
-
+    graph_list = _validate_expected_num_graphs(graph_list, args.expected_num_graphs)
     max_weight_norm = 0.0
     max_weight_raw = -float("inf")
     total_edges = 0
@@ -615,8 +840,11 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             total_edges += 1
 
     log_success(f"Rescaled {total_edges} edges to range [{interference_min:.4f}, {interference_max:.4f}]")
+    if args.save_graphs_path:
+        save_graphs_pickle(graph_list, args.save_graphs_path)
+        log_success(f"Saved generated graphs to {args.save_graphs_path}")
 
-    save_path = Path("samples/wireless.png")
+    save_path = artifact_dir / "wireless.png"
     save_path.parent.mkdir(parents=True, exist_ok=True)
     if len(graph_list) > 0:
         first_graph_obj = graph_list[0]
@@ -656,6 +884,35 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
             print_header("Ratios vs reference")
             for k, v in sorted(ratios.items()):
                 print_row(k, v)
+
+        if args.json_out:
+            out_path = Path(args.json_out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "dataset_name": cfg.data.data,
+                "checkpoint": str(checkpoint_path),
+                "num_graphs": len(graph_list),
+                "metrics": metrics_out,
+                "metrics_ratio": ratios,
+            }
+            with open(out_path, "w") as f:
+                json.dump(payload, f, indent=2)
+            log_success(f"Results saved to {out_path}")
+
+        masked_eval_results = _run_wireless_masked_eval(
+            cfg,
+            datamodule,
+            sampler,
+            split=cond_split,
+            checkpoint_path=checkpoint_path,
+            use_ema=(not args.no_ema) and cfg.train.use_ema,
+            run_name=getattr(args, "conditional_eval_name", None),
+            condition_mode=getattr(args, "conditional_eval_condition_mode", "true"),
+            mask_mode=getattr(args, "conditional_eval_mask_mode", "true"),
+            resume_path=getattr(args, "conditional_eval_resume_path", None),
+        )
+        label = "conditional" if getattr(cfg.model, "conditional", False) else "unconditional"
+        _print_wireless_masked_eval_metrics(label, cond_split, masked_eval_results)
 
         try:
             ref_graphs_raw = []
@@ -718,7 +975,7 @@ def run_gen_wireless(args, cfg, MetricsClass, DatasetClass):
                     snapshots, max_value = fallback_snapshots, fallback_max
             return snapshots, max_value
 
-        heatmap_snapshots, vmax = build_weighted_snapshots(samples, cfg.data.max_node_num)
+        heatmap_snapshots, vmax = build_weighted_snapshots(graph_list, cfg.data.max_node_num)
         if heatmap_snapshots:
             grid_cols = min(5, len(heatmap_snapshots))
             grid_rows = math.ceil(len(heatmap_snapshots) / grid_cols)
@@ -772,11 +1029,12 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["pa", "sbm_2comms", "tree_graphon", "d_regular", "planar", "metrofi"],
+        choices=["pa", "sbm_2comms", "tree_graphon", "d_regular", "planar", "metrofi_cond", "metrofi_uncond"],
         help="Specific diffusion model/config type to use."
     )
     parent_parser.add_argument("--seed", type=int, default=None, help="Override default config seed.")
     parent_parser.add_argument("--device", type=str, default=None, help="Override general device (e.g. cuda, cpu, cuda:0).")
+    parent_parser.add_argument("--batch-size", type=int, default=None, help="Override data batch size.")
 
     parser = argparse.ArgumentParser(description="Unified Jacobi Graph Diffusion Entrypoint")
     subparsers = parser.add_subparsers(dest="mode", required=True, help="Mode to run.")
@@ -791,6 +1049,7 @@ def main():
     gen_parser.add_argument("--load-graphs-path", type=str, default=None, help="Optional path to a saved graphs pickle to evaluate instead of generating.")
     gen_parser.add_argument("--expected-num-graphs", type=int, default=None, help="If set, raise an error unless loaded/generated graph list size matches this.")
     gen_parser.add_argument("--json-out", type=str, default=None, help="Save final evaluation metrics to this JSON file.")
+    gen_parser.add_argument("--wireless-output-dir", type=str, default=None, help="Directory for MetroFi plots and sampler history artifacts.")
     gen_parser.add_argument("--kernel", type=str, default="emd", help="Kernel name (default: 'emd').")
     gen_parser.add_argument("--n-folds", type=int, default=1, help="Number of folds to evaluate.")
     gen_parser.add_argument("--min-nodes", type=int, default=None, help="Minimum number of nodes to sample.")
@@ -799,6 +1058,25 @@ def main():
     gen_parser.add_argument("--sampling-batch-size", type=int, default=None, help="Sampling batch size; use the sample count to generate in one pass.")
     gen_parser.add_argument("--eps-sde", type=float, default=None, help="Override the SDE epsilon used for generation.")
     gen_parser.add_argument("--eps-time", type=float, default=None, help="Override the solver end time used for generation.")
+    gen_parser.add_argument("--guidance-scale", type=float, default=None, help="Override CFG guidance scale for conditional generation.")
+    gen_parser.add_argument("--sampler-eps-time", type=float, default=None, help="Override sampler terminal diffusion time.")
+    gen_parser.add_argument("--sampler-snr", type=float, default=None, help="Override Langevin corrector SNR.")
+    gen_parser.add_argument("--sampler-scale-eps", type=float, default=None, help="Override Langevin corrector noise scale.")
+    gen_parser.add_argument("--sampler-n-steps", type=int, default=None, help="Override Langevin corrector steps per predictor step.")
+    gen_parser.add_argument("--sampler-predictor", choices=["em", "heun", "milstein"], default=None, help="Override reverse SDE predictor.")
+    gen_parser.add_argument("--sampler-time-schedule-power", type=float, default=None, help="Override sampler time schedule power.")
+    gen_parser.add_argument("--sampler-noise-removal", action=argparse.BooleanOptionalAction, default=None, help="Override final denoising/noise-removal flag.")
+    gen_parser.add_argument("--sampler-use-corrector", action=argparse.BooleanOptionalAction, default=None, help="Override Langevin corrector usage.")
+    gen_parser.add_argument("--sde-num-scales", type=int, default=None, help="Override number of reverse diffusion scales.")
+    gen_parser.add_argument("--sde-eps-sde", type=float, default=None, help="Override the SDE numerical epsilon.")
+    gen_parser.add_argument("--model-use-sampled-features", action=argparse.BooleanOptionalAction, default=None, help="Override whether feature extraction uses sampled edges during generation.")
+    gen_parser.add_argument("--conditional-eval-split", choices=["val", "test"], default="test", help="Split for conditional masked MSE/MAE.")
+    gen_parser.add_argument("--conditional-eval-graphs", type=int, default=None, help="Number of graphs for conditional masked MSE/MAE.")
+    gen_parser.add_argument("--conditional-eval-name", type=str, default=None, help="Readable output folder prefix for conditional eval artifacts.")
+    gen_parser.add_argument("--conditional-eval-condition-mode", choices=["true", "shuffled", "zero"], default="true", help="Coordinate condition ablation mode for MetroFi conditional eval.")
+    gen_parser.add_argument("--conditional-eval-mask-mode", choices=["true", "full", "both"], default="true", help="Generation mask variant for MetroFi paired evaluation.")
+    gen_parser.add_argument("--conditional-eval-only", action="store_true", help="Only run MetroFi masked evaluation and skip full sampling metrics.")
+    gen_parser.add_argument("--conditional-eval-resume-path", type=str, default=None, help="Optional batch-level resume file for long paired evaluations.")
     gen_parser.add_argument("--no-ema", action="store_true", help="Disable loading EMA checkpoint weights.")
     gen_parser.add_argument("--skip-size-ref", action="store_true", help="Skip loading size-specific reference metrics.")
     gen_parser.add_argument("--no-average-ratio-to-size-ref", dest="no_average_ratio_to_size_ref", action="store_true", help="Skip calculating size-matched reference ratios.")
@@ -824,6 +1102,8 @@ def main():
         cfg.general.seed = args.seed
     if args.device is not None:
         cfg.general.device = args.device
+    if args.batch_size is not None:
+        cfg.data.batch_size = args.batch_size
     if args.mode == "gen" and args.num_samples is not None:
         cfg.sampler.test_graphs = args.num_samples
     if args.mode == "gen" and args.sampling_batch_size is not None:
@@ -834,6 +1114,34 @@ def main():
         cfg.sde.eps_sde = args.eps_sde
     if args.mode == "gen" and args.eps_time is not None:
         cfg.sampler.eps_time = args.eps_time
+    if args.mode == "gen" and getattr(args, "guidance_scale", None) is not None:
+        cfg.sampler.guidance_scale = args.guidance_scale
+    if args.mode == "gen" and getattr(args, "sampler_eps_time", None) is not None:
+        cfg.sampler.eps_time = args.sampler_eps_time
+    if args.mode == "gen" and getattr(args, "sampler_snr", None) is not None:
+        cfg.sampler.snr = args.sampler_snr
+    if args.mode == "gen" and getattr(args, "sampler_scale_eps", None) is not None:
+        cfg.sampler.scale_eps = args.sampler_scale_eps
+    if args.mode == "gen" and getattr(args, "sampler_n_steps", None) is not None:
+        cfg.sampler.n_steps = args.sampler_n_steps
+    if args.mode == "gen" and getattr(args, "sampler_predictor", None) is not None:
+        cfg.sampler.predictor = args.sampler_predictor
+    if args.mode == "gen" and getattr(args, "sampler_time_schedule_power", None) is not None:
+        cfg.sampler.time_schedule_power = args.sampler_time_schedule_power
+    if args.mode == "gen" and getattr(args, "sampler_noise_removal", None) is not None:
+        cfg.sampler.noise_removal = args.sampler_noise_removal
+    if args.mode == "gen" and getattr(args, "sampler_use_corrector", None) is not None:
+        cfg.sampler.use_corrector = args.sampler_use_corrector
+    if args.mode == "gen" and getattr(args, "sde_num_scales", None) is not None:
+        cfg.sde.num_scales = args.sde_num_scales
+    if args.mode == "gen" and getattr(args, "sde_eps_sde", None) is not None:
+        cfg.sde.eps_sde = args.sde_eps_sde
+    if args.mode == "gen" and getattr(args, "model_use_sampled_features", None) is not None:
+        cfg.model.use_sampled_features = args.model_use_sampled_features
+    if args.mode == "gen" and getattr(args, "conditional_eval_graphs", None) is not None:
+        cfg.sampler.conditional_eval_graphs = args.conditional_eval_graphs
+
+    apply_metrofi_conditional_config(cfg, args.model)
 
     # Global seeding
     _ = pl.seed_everything(cfg.general.seed, workers=True)

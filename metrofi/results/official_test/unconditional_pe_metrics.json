@@ -1,0 +1,19 @@
+{
+  "model": "unconditional + PE + nosf",
+  "entrypoint": "metrofi_uncond",
+  "checkpoint": "checkpoints/metrofi_uncond_pe_nosf_epoch999.ckpt",
+  "split": "test",
+  "graphs": 943,
+  "uses_coordinates": false,
+  "uses_true_mask": true,
+  "node_pe": true,
+  "use_sampled_features": false,
+  "metrics": {
+    "mse": 0.026342228055000305,
+    "mae": 0.11938189715147018,
+    "pooled_wasserstein": 0.03223323650954605,
+    "pooled_js": 0.02764844991340172,
+    "pair_ks": 0.5817098057363221,
+    "pair_wasserstein": 0.07108947533500665
+  }
+}

@@ -82,6 +82,131 @@ def plot_graph_comparison(
     return fig
 
 
+def _masked_adjacency_for_plot(adj: ArrayLike, flags: Optional[ArrayLike], matrix_size: int) -> np.ma.MaskedArray:
+    adj_np = _to_numpy(adj).astype(float)
+    matrix = np.full((matrix_size, matrix_size), np.nan, dtype=float)
+    n = min(matrix_size, adj_np.shape[0], adj_np.shape[1])
+    matrix[:n, :n] = adj_np[:n, :n]
+
+    if flags is not None:
+        flags_np = _to_numpy(flags).astype(bool)
+        active = np.zeros(matrix_size, dtype=bool)
+        m = min(matrix_size, flags_np.shape[0])
+        active[:m] = flags_np[:m]
+        valid = active[:, None] & active[None, :]
+        matrix[~valid] = np.nan
+
+    np.fill_diagonal(matrix, np.nan)
+    return np.ma.masked_invalid(matrix)
+
+
+def _masked_mse_for_plot(gt_adj: ArrayLike, gen_adj: ArrayLike, flags: Optional[ArrayLike], matrix_size: int) -> float:
+    gt_np = _to_numpy(gt_adj).astype(float)
+    gen_np = _to_numpy(gen_adj).astype(float)
+    n = min(matrix_size, gt_np.shape[0], gt_np.shape[1], gen_np.shape[0], gen_np.shape[1])
+    valid = np.ones((n, n), dtype=bool)
+
+    if flags is not None:
+        flags_np = _to_numpy(flags).astype(bool)
+        active = flags_np[:n]
+        valid = active[:, None] & active[None, :]
+
+    np.fill_diagonal(valid, False)
+    if not np.any(valid):
+        return float("nan")
+
+    diff = gen_np[:n, :n] - gt_np[:n, :n]
+    return float(np.mean(diff[valid] ** 2))
+
+
+def save_conditional_adjacency_analysis(
+    gt_adjs: ArrayLike,
+    gen_adjs: ArrayLike,
+    flags: Optional[ArrayLike],
+    out_dir: Union[str, PathLike[str]],
+    *,
+    matrix_size: int = 70,
+    max_graphs: int = 8,
+    dpi: int = 150,
+) -> None:
+    from pathlib import Path
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    gt_np = _to_numpy(gt_adjs)
+    gen_np = _to_numpy(gen_adjs)
+    if gt_np.ndim == 2:
+        gt_np = gt_np[None, ...]
+    if gen_np.ndim == 2:
+        gen_np = gen_np[None, ...]
+
+    flags_np = None if flags is None else _to_numpy(flags)
+    if flags_np is not None and flags_np.ndim == 1:
+        flags_np = flags_np[None, ...]
+
+    n_graphs = min(max_graphs, gt_np.shape[0], gen_np.shape[0])
+    if flags_np is not None:
+        n_graphs = min(n_graphs, flags_np.shape[0])
+    if n_graphs <= 0:
+        return
+
+    fig, axes = plt.subplots(2, n_graphs, figsize=(3.0 * n_graphs, 6.0), squeeze=False)
+    cmap = plt.get_cmap("coolwarm").copy()
+    cmap.set_bad(color="white")
+    image = None
+    mses = []
+
+    for idx in range(n_graphs):
+        graph_flags = None if flags_np is None else flags_np[idx]
+        gt_matrix = _masked_adjacency_for_plot(gt_np[idx], graph_flags, matrix_size)
+        gen_matrix = _masked_adjacency_for_plot(gen_np[idx], graph_flags, matrix_size)
+        mse = _masked_mse_for_plot(gt_np[idx], gen_np[idx], graph_flags, matrix_size)
+        mses.append(mse)
+
+        image = axes[0, idx].imshow(gt_matrix, cmap=cmap, vmin=0.0, vmax=1.0, interpolation="none")
+        axes[0, idx].set_title(f"GT {idx}", fontsize=9)
+        axes[1, idx].imshow(gen_matrix, cmap=cmap, vmin=0.0, vmax=1.0, interpolation="none")
+        axes[1, idx].set_title(f"Gen {idx}\nMSE={mse:.4f}", fontsize=9)
+        for row in range(2):
+            axes[row, idx].set_xticks([])
+            axes[row, idx].set_yticks([])
+
+    finite = np.asarray(mses, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    mean_mse = float(finite.mean()) if finite.size else float("nan")
+    fig.suptitle(f"Conditional samples: GT top, generated bottom, mean MSE={mean_mse:.4f}")
+    if image is not None:
+        fig.colorbar(image, ax=axes.ravel().tolist(), shrink=0.75, label="Normalized interference")
+    save_figure(fig, out_dir / "comparison.png", dpi=dpi)
+
+
+def plot_pooled_edge_weight_histogram(
+    reference_values: ArrayLike,
+    generated_values: ArrayLike,
+    *,
+    bins: int = 50,
+    value_range: Tuple[float, float] = (0.0, 1.0),
+    dataset_name: Optional[str] = None,
+) -> plt.Figure:
+    ref = _to_numpy(reference_values).astype(float).reshape(-1)
+    gen = _to_numpy(generated_values).astype(float).reshape(-1)
+    ref = ref[np.isfinite(ref)]
+    gen = gen[np.isfinite(gen)]
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 4))
+    if ref.size:
+        ax.hist(ref, bins=bins, range=value_range, density=True, alpha=0.6, label="ground truth", color="#2980b9")
+    if gen.size:
+        ax.hist(gen, bins=bins, range=value_range, density=True, alpha=0.6, label="generated", color="#c0392b")
+    ax.set_xlim(*value_range)
+    ax.set_xlabel("Normalized edge weight")
+    ax.set_ylabel("Density")
+    ax.set_title(dataset_name or "Pooled edge-weight distribution")
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
 def plot_graph_grid(
     graph_list: Sequence[nx.Graph],
     *,
